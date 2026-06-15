@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ATC – Arlanda Approach</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospace; overflow: hidden; user-select: none; }
+#ui { display: flex; height: 100vh; width: 100vw; }
+#radar-wrap { position: relative; flex: 1; overflow: hidden; }
+#radar { display: block; width: 100%; height: 100%; }
+
+#sidebar {
+  width: 220px; background: #060c14; border-left: 1px solid #1a3a1a;
+  display: flex; flex-direction: column; padding: 12px; gap: 10px; font-size: 11px;
+}
+#sidebar h2 { color: #4aff4a; font-size: 13px; letter-spacing: 2px; border-bottom: 1px solid #1a3a1a; padding-bottom: 6px; }
+.stat-row { display: flex; justify-content: space-between; color: #6a9a6a; }
+.stat-val { color: #c0ffc0; font-weight: bold; }
+#speed-ctrl { display: flex; gap: 4px; }
+.spd-btn { flex:1; padding:5px 2px; background:#0d1f0d; border:1px solid #1a3a1a; color:#6a9a6a; font-family:'Courier New',monospace; font-size:10px; cursor:pointer; border-radius:3px; text-align:center; transition:all .15s; }
+.spd-btn:hover { border-color:#4aff4a; color:#c0ffc0; }
+.spd-btn.active { background:#1a4a00; border-color:#4aff4a; color:#4aff4a; font-weight:bold; }
+#strip-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:4px; }
+.strip { background:#0d1f0d; border:1px solid #1a3a1a; border-left:3px solid #2a6a2a; padding:5px 7px; cursor:pointer; border-radius:2px; transition:border-color .2s; }
+.strip:hover { border-color:#4aff4a; }
+.strip.open { border-left-color:#4aff4a; background:#0f2a0f; }
+.strip.fuel-warn { border-left-color:#ffaa00; }
+.strip.fuel-crit { border-left-color:#ff3300; animation:pulse .6s infinite alternate; }
+@keyframes pulse { from{opacity:1} to{opacity:.5} }
+.strip-call { color:#c0ffc0; font-weight:bold; font-size:12px; }
+.strip-type { color:#6a9a6a; font-size:10px; }
+.strip-fuel { font-size:10px; }
+
+/* ── HUD ── */
+#hud-layer { position:absolute; inset:0; pointer-events:none; z-index:5; }
+.hud {
+  position:absolute; width:230px;
+  background:rgba(6,12,20,0.50); border:1px solid #2a6a2a; border-radius:6px;
+  box-shadow:0 0 18px rgba(74,255,74,0.12);
+  pointer-events:all; font-size:11px;
+}
+.hud.focused { border-color:#4aff4a; z-index:10; }
+.hud.flash { animation: hudflash 0.4s ease-out; }
+@keyframes hudflash { 0%{background:rgba(74,255,74,0.45)} 100%{background:rgba(6,12,20,0.50)} }
+.hud-title {
+  display:flex; justify-content:space-between; align-items:center;
+  color:#4aff4a; font-size:12px; letter-spacing:2px;
+  padding:10px 12px 6px; cursor:move; border-bottom:1px solid #1a3a1a;
+}
+.hud-title .cls { color:#6a9a6a; cursor:pointer; font-size:11px; padding:0 2px; }
+.hud-title .cls:hover { color:#ff5555; }
+.hud-body { padding:10px 12px; }
+.hud-row { display:flex; justify-content:space-between; margin-bottom:6px; color:#6a9a6a; }
+.hud-val { color:#c0ffc0; }
+.cmp-wrap { text-align:center; margin:6px 0; }
+.cmp-canvas { display:block; margin:0 auto; cursor:crosshair; border-radius:50%; }
+.spd-row { margin:6px 0; }
+.spd-lbl { display:flex; justify-content:space-between; margin-bottom:3px; color:#6a9a6a; font-size:10px; }
+.spd-inp { width:100%; accent-color:#4aff4a; cursor:pointer; }
+.hud-btn { width:100%; margin-top:5px; padding:6px; background:#0d1f0d; border:1px solid #2a6a2a; color:#4aff4a; font-family:'Courier New',monospace; font-size:11px; cursor:pointer; letter-spacing:1px; border-radius:3px; }
+.hud-btn:hover:not(:disabled) { background:#1a3a1a; }
+.hud-btn:disabled { opacity:.3; cursor:not-allowed; }
+.hud-btn.hold-on { background:#1a3a00; border-color:#6aaa00; color:#aaff00; }
+
+#gameover { position:absolute; inset:0; background:rgba(0,0,0,.88); display:none; flex-direction:column; align-items:center; justify-content:center; gap:16px; z-index:20; }
+#gameover h1 { color:#ff3300; font-size:36px; letter-spacing:4px; }
+#gameover p { color:#a0c4a0; font-size:14px; text-align:center; line-height:1.8; }
+#gameover p b { color:#c0ffc0; }
+#gameover button { padding:10px 28px; background:#0d1f0d; border:1px solid #4aff4a; color:#4aff4a; font-family:'Courier New',monospace; font-size:14px; cursor:pointer; letter-spacing:2px; border-radius:3px; }
+#gameover button:hover { background:#1a3a1a; }
+#msg-bar { position:absolute; bottom:8px; left:8px; right:228px; font-size:11px; color:#4aff4a; pointer-events:none; opacity:0; transition:opacity .4s; }
+#msg-bar.show { opacity:1; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="radar-wrap">
+    <canvas id="radar"></canvas>
+    <div id="hud-layer"></div>
+    <div id="msg-bar"></div>
+    <div id="gameover">
+      <h1>MAYDAY</h1>
+      <p id="go-reason"></p><p id="go-score"></p>
+      <button onclick="showMenu()">NY SESSION</button>
+    </div>
+  </div>
+  <div id="sidebar">
+    <h2>ARLANDA ATC</h2>
+    <div class="stat-row"><span>LANDED</span><span class="stat-val" id="s-landed">0</span></div>
+    <div class="stat-row"><span>SCORE</span><span class="stat-val" id="s-score">0</span></div>
+    <div class="stat-row"><span>AIRBORNE</span><span class="stat-val" id="s-airborne">0</span></div>
+    <div class="stat-row"><span>TIME</span><span class="stat-val" id="s-time">00:00</span></div>
+    <div class="stat-row"><span>KVAR</span><span class="stat-val" id="s-left">30:00</span></div>
+    <div class="stat-row"><span>ANROP</span><span class="stat-val" id="s-cmds">0</span></div>
+    <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
+    <div style="color:#4aff4a;font-size:10px;letter-spacing:1px;margin-bottom:4px">SIM SPEED</div>
+    <div id="speed-ctrl">
+      <button class="spd-btn" id="btn-0x" onclick="togglePause()">❙❙</button>
+      <button class="spd-btn active" id="btn-1x" onclick="setSimSpeed(1)">1×</button>
+      <button class="spd-btn" id="btn-2x" onclick="setSimSpeed(2)">2×</button>
+      <button class="spd-btn" id="btn-4x" onclick="setSimSpeed(4)">4×</button>
+      <button class="spd-btn" id="btn-6x" onclick="setSimSpeed(6)">6×</button>
+    </div>
+    <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
+    <div style="color:#4aff4a;font-size:10px;letter-spacing:1px;margin-bottom:4px">FLIGHT STRIPS</div>
+    <div id="strip-list"></div>
+    <div style="border-top:1px solid #1a3a1a;padding-top:8px;font-size:10px;color:#3a5a3a;line-height:1.7">
+      Click plane or strip → open HUD<br>
+      Drag HUD title to move<br>
+      ILS: HDG ~270°, enter cone<br>
+      Sep: 3 NM minimum
+    </div>
+  </div>
+</div>
+<script>
+// ── Constants ──────────────────────────────────────────────────────────────
+const NM = 28;
+const SEP_MIN = 3 * NM;
+const RWY_HDG = 270;
+const ILS_HALF = 12;
+const ILS_RANGE = 10 * NM;
+const SPAWN_INT_START = 20000;
+const SPAWN_INT_MIN   = 10000;
+const TURN_RATE = 3.0;
+const PRED_SECS = 60;
+let MAX_PLANES = 5;
+let SESSION_MAX = 30 * 60;
+
+const TYPES = [
+  { label:'B737', minSpd:180, maxSpd:249, weight:1.0 },
+  { label:'A320', minSpd:180, maxSpd:249, weight:1.0 },
+  { label:'B77W', minSpd:180, maxSpd:249, weight:1.5 },
+  { label:'A388', minSpd:180, maxSpd:249, weight:2.0 },
+  { label:'DH8D', minSpd:180, maxSpd:249, weight:0.8 },
+];
+const AIRLINES = ['SAS','SK','TK','LH','AY','BA','FR','D8','WF','KL','AZ','IB'];
+
+// ── State ──────────────────────────────────────────────────────────────────
+let canvas, ctx;
+let W, H, RWY_X, RWY_Y;
+let planes = [], score = 0, landed = 0, gameOver = false;
+let elapsed = 0, lastTime = 0, spawnTimer = 0, spawnInterval = SPAWN_INT_START, nextId = 1;
+let runwayOccupied = false, runwayTimer = 0;
+let simSpeed = 1, paused = false, pauseTimer = 0;
+let totalCmds = 0, hdgCmds = 0, spdUpCmds = 0, spdDnCmds = 0;
+
+// ── HUD registry ──────────────────────────────────────────────────────────
+// huds[planeId] = { el, cctx, refs:{hdg,spd,fuel,status,spdVal,spdSlider,holdBtn,ilsBtn} }
+const huds = {};
+
+
+// ── Menu ────────────────────────────────────────────────────────────────────
+let menuTime = 15, menuPlanes = 5;
+
+function menuSelect(type, val) {
+  if (type === 'time') {
+    menuTime = val;
+    document.getElementById('m-15').className = 'menu-opt' + (val===15?' selected':'');
+    document.getElementById('m-30').className = 'menu-opt' + (val===30?' selected':'');
+  } else {
+    menuPlanes = val;
+    document.getElementById('m-5').className = 'menu-opt' + (val===5?' selected':'');
+    document.getElementById('m-7').className = 'menu-opt' + (val===7?' selected':'');
+    document.getElementById('m-9').className = 'menu-opt' + (val===9?' selected':'');
+  }
+}
+
+function showMenu() {
+  document.getElementById('gameover').style.display='none';
+  document.getElementById('menu').style.display='flex';
+}
+
+function startFromMenu() {
+  SESSION_MAX = menuTime * 60;
+  MAX_PLANES  = menuPlanes;
+  document.getElementById('menu').style.display = 'none';
+  initGame();
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+function initGame() {
+  if (!canvas) {
+    canvas = document.getElementById('radar');
+    ctx = canvas.getContext('2d');
+    canvas.addEventListener('click', onRadarClick);
+    canvas.addEventListener('mousemove', onRadarHover);
+    window.addEventListener('resize', resize);
+  }
+  resize();
+  planes = []; score = 0; landed = 0; gameOver = false;
+  elapsed = 0; spawnTimer = 0; spawnInterval = SPAWN_INT_START; nextId = 1;
+  runwayOccupied = false; runwayTimer = 0; simSpeed = 1;
+  totalCmds = 0; hdgCmds = 0; spdUpCmds = 0; spdDnCmds = 0;
+  paused = false; pauseTimer = 0;
+  setSimSpeed(1);
+  // destroy all open HUDs
+  Object.keys(huds).forEach(id => destroyHud(+id));
+  document.getElementById('gameover').style.display = 'none';
+  spawnPlane();
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+function resize() {
+  const wrap = document.getElementById('radar-wrap');
+  W = canvas.width  = wrap.clientWidth;
+  H = canvas.height = wrap.clientHeight;
+  RWY_X = W * 0.55; RWY_Y = H * 0.5;
+}
+
+// ── Sim speed ──────────────────────────────────────────────────────────────
+function togglePause() {
+  paused = !paused;
+  if (!paused) pauseTimer = 0;
+  const btn = document.getElementById('btn-0x');
+  if (btn) btn.className = 'spd-btn' + (paused ? ' active' : '');
+}
+
+function setSimSpeed(s) {
+  paused = false;
+  pauseTimer = 0;
+  document.getElementById('btn-0x').className = 'spd-btn';
+  simSpeed = s;
+  [1,2,4,6].forEach(v => {
+    const b = document.getElementById('btn-'+v+'x');
+    if (b) b.className = 'spd-btn' + (v===s?' active':'');
+  });
+}
+
+// ── Game loop ──────────────────────────────────────────────────────────────
+function loop(ts) {
+  if (gameOver) return;
+  const dt = Math.min((ts - lastTime)/1000, 0.1) * simSpeed;
+  lastTime = ts;
+  if (paused) {
+    pauseTimer += (ts - lastTime) / 1000;
+    if (pauseTimer >= 10) { score -= 1; pauseTimer -= 10; showMsg('Paus – -1 pt'); }
+    lastTime = ts;
+    requestAnimationFrame(loop);
+    return;
+  }
+  elapsed += dt;
+  if (elapsed >= SESSION_MAX) { triggerSessionEnd(); return; }
+  spawnTimer += dt * 1000;
+  if (spawnTimer >= spawnInterval) {
+    spawnTimer = 0;
+    spawnInterval = Math.max(SPAWN_INT_MIN, spawnInterval - 500);
+    spawnPlane();
+  }
+  if (runwayOccupied) { runwayTimer -= dt; if (runwayTimer <= 0) runwayOccupied = false; }
+  updatePlanes(dt);
+  checkCollisions();
+  draw();
+  updateSidebar();
+  updateAllHuds();
+  requestAnimationFrame(loop);
+}
+
+// ── Spawn ──────────────────────────────────────────────────────────────────
+function spawnPlane() {
+  if (planes.filter(p=>p.status!=='landed').length >= MAX_PLANES) return;
+  const type = TYPES[Math.floor(Math.random()*TYPES.length)];
+  const call = AIRLINES[Math.floor(Math.random()*AIRLINES.length)] + (100+Math.floor(Math.random()*899));
+  const R = 16*NM, a = Math.random()*Math.PI*2;
+  const x = RWY_X + Math.cos(a)*R, y = RWY_Y + Math.sin(a)*R;
+  const toRwy = (Math.atan2(RWY_Y-y, RWY_X-x)*180/Math.PI + 90 + 360)%360;
+  const hdg = ((toRwy + Math.random()*120-60)+360)%360;
+  const spd = type.minSpd + Math.random()*(type.maxSpd-type.minSpd)*0.4;
+  const fuel = (960 + Math.random()*720) * 0.9; // -10%
+  planes.push({ id:nextId++, call, type, x, y, hdg, targetHdg:hdg, spd, targetSpd:spd, fuel, maxFuel:fuel,
+    status:'inbound', holdAngle:0, holdCx:0, holdCy:0, trail:[], goAroundTimer:0 });
+  showMsg(call + ' – entering sector');
+}
+
+// ── Update ─────────────────────────────────────────────────────────────────
+function updatePlanes(dt) {
+  const remove = [];
+  for (const p of planes) {
+    if (p.status==='landed') { remove.push(p.id); continue; }
+    if (p.status!=='landing') {
+      p.fuel -= dt;
+      if (p.fuel<=0) { triggerGameOver(p.call+' ran out of fuel'); return; }
+    }
+    if (p.status==='goaround') {
+      p.goAroundTimer -= dt; moveForward(p,dt); pushTrail(p);
+      if (p.goAroundTimer<=0) { p.status='inbound'; showMsg(p.call+' – re-entering'); }
+      continue;
+    }
+
+    if (p.status==='ils') {
+      p.targetHdg = RWY_HDG; turnToward(p,dt);
+      p.spd = Math.max(p.type.minSpd, p.spd-20*dt);
+      const prevX = p.x;
+      moveForward(p,dt); pushTrail(p);
+      // Trigger landing when plane passes or reaches runway threshold (RWY_X)
+      // heading 270 = moving left, so x decreasing. Trigger when x crosses RWY_X
+      // Also catch proximity in case of slow approach
+      const crossed = prevX >= RWY_X && p.x <= RWY_X;
+      const close   = Math.hypot(p.x-RWY_X, p.y-RWY_Y) < 2*NM;
+      // Auto go-around if runway occupied when reaching threshold
+      if ((crossed || close) && p.status==='ils' && runwayOccupied) {
+        initiateGoAround(p, 'occupied'); continue;
+      }
+      if ((crossed || close) && p.status==='ils') {
+        p.x = RWY_X; p.y = RWY_Y; // snap to threshold
+        p.status='landing'; runwayOccupied=true; runwayTimer=60;
+        const pid=p.id;
+        setTimeout(()=>{
+          const lp=planes.find(q=>q.id===pid);
+          if(lp){lp.status='landed';landed++;score+=Math.round(100*lp.type.weight);
+            showMsg(lp.call+' – landed ✓  +'+Math.round(100*lp.type.weight)+' pts');}
+        }, 2000/simSpeed);
+      }
+      continue;
+    }
+    if (p.status==='landing') {
+      p.targetHdg=RWY_HDG; turnToward(p,dt); p.spd=Math.max(0,p.spd-60*dt); moveForward(p,dt); pushTrail(p); continue;
+    }
+    turnToward(p,dt); p.spd+=(p.targetSpd-p.spd)*dt*0.5; moveForward(p,dt); pushTrail(p);
+    // Auto go-around on separation breach during ILS final
+    if (p.status==='ils' && nearestConflict(p)) {
+      initiateGoAround(p, 'sep');
+    }
+  }
+  planes = planes.filter(p=>!remove.includes(p.id));
+  // close HUDs for removed planes
+  remove.forEach(id => { if (huds[id]) destroyHud(id); });
+}
+
+function moveForward(p,dt) {
+  const rad=(p.hdg-90)*Math.PI/180, pps=(p.spd*NM)/3600;
+  p.x+=Math.cos(rad)*pps*dt; p.y+=Math.sin(rad)*pps*dt;
+}
+function turnToward(p,dt) {
+  const d=angleDiff(p.hdg,p.targetHdg), m=TURN_RATE*dt;
+  p.hdg = Math.abs(d)<m ? p.targetHdg : p.hdg+Math.sign(d)*m;
+  p.hdg = ((p.hdg%360)+360)%360;
+}
+function pushTrail(p) { p.trail.push({x:p.x,y:p.y}); if(p.trail.length>14) p.trail.shift(); }
+
+function isInILSCone(p) {
+  const dx=p.x-RWY_X, dy=p.y-RWY_Y;
+  const dist=Math.hypot(dx,dy);
+  if (dist>ILS_RANGE||dist<0.5*NM) return false;
+  const bearing=(Math.atan2(dx,-dy)*180/Math.PI+360)%360;
+  const coneDir=(RWY_HDG+180)%360;
+  if (Math.abs(angleDiff(bearing,coneDir))>ILS_HALF) return false;
+  return Math.abs(angleDiff(p.hdg,RWY_HDG))<ILS_HALF;
+}
+function nearestConflict(p) {
+  return planes.find(q=>q.id!==p.id&&q.status!=='landed'&&q.status!=='goaround'&&Math.hypot(p.x-q.x,p.y-q.y)<SEP_MIN)||null;
+}
+
+function initiateGoAround(p, reason) {
+  if(p.status==='goaround'||p.status==='landed'||p.status==='landing') return;
+  p.status = 'goaround';
+  p.targetHdg = 180;        // due south
+  p.targetSpd = 249;        // max speed
+  p.goAroundTimer = 25;
+  score -= 20;
+  showMsg(p.call + ' – GO AROUND' + (reason==='manual'?' (manuell)':reason==='sep'?' (separation)'
+    :' (bana belagd)') + '  −20 pts');
+}
+
+function checkCollisions() {
+  for (let i=0;i<planes.length;i++) {
+    if (planes[i].status==='landed'||planes[i].status==='landing') continue;
+    for (let j=i+1;j<planes.length;j++) {
+      if (planes[j].status==='landed'||planes[j].status==='landing') continue;
+      if (Math.hypot(planes[i].x-planes[j].x,planes[i].y-planes[j].y)<NM)
+        { triggerGameOver('Collision: '+planes[i].call+' × '+planes[j].call); return; }
+    }
+  }
+}
+
+// ── Draw ───────────────────────────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  // grid
+  ctx.strokeStyle='rgba(20,50,20,.3)'; ctx.lineWidth=.5;
+  for (let x=0;x<W;x+=5*NM){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for (let y=0;y<H;y+=5*NM){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  // rings
+  ctx.strokeStyle='rgba(20,80,20,.25)'; ctx.lineWidth=.8;
+  [5,10,15,20].forEach(r=>{ctx.beginPath();ctx.arc(RWY_X,RWY_Y,r*NM,0,Math.PI*2);ctx.stroke();});
+
+  // Sector border – outer ring at 20 NM
+  ctx.beginPath(); ctx.arc(RWY_X, RWY_Y, 20*NM, 0, Math.PI*2);
+  ctx.strokeStyle='#1a6a1a'; ctx.lineWidth=2; ctx.stroke();
+  // subtle glow
+  ctx.beginPath(); ctx.arc(RWY_X, RWY_Y, 20*NM, 0, Math.PI*2);
+  ctx.strokeStyle='rgba(26,160,26,0.12)'; ctx.lineWidth=8; ctx.stroke();
+  // SECTOR label at top
+  ctx.save();
+  ctx.font='bold 10px Courier New'; ctx.fillStyle='#2a7a2a';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('ARLANDA TMA', RWY_X, RWY_Y - 20*NM - 14);
+  ctx.textAlign='start';
+  ctx.restore();
+  // ILS cone
+  const cRad=(RWY_HDG+90)*Math.PI/180, halfA=ILS_HALF*Math.PI/180;
+  ctx.beginPath();
+  ctx.moveTo(RWY_X,RWY_Y);
+  ctx.lineTo(RWY_X+Math.cos(cRad-halfA)*ILS_RANGE, RWY_Y+Math.sin(cRad-halfA)*ILS_RANGE);
+  ctx.lineTo(RWY_X+Math.cos(cRad+halfA)*ILS_RANGE, RWY_Y+Math.sin(cRad+halfA)*ILS_RANGE);
+  ctx.closePath();
+  ctx.fillStyle='rgba(0,180,0,.05)'; ctx.fill();
+  ctx.strokeStyle='rgba(0,180,0,.3)'; ctx.lineWidth=1; ctx.stroke();
+  ctx.setLineDash([6,8]); ctx.strokeStyle='rgba(0,180,0,.4)';
+  ctx.beginPath(); ctx.moveTo(RWY_X,RWY_Y);
+  ctx.lineTo(RWY_X+Math.cos(cRad)*ILS_RANGE, RWY_Y+Math.sin(cRad)*ILS_RANGE);
+  ctx.stroke(); ctx.setLineDash([]);
+  // runway
+  const rwyRad=(RWY_HDG-90)*Math.PI/180, rLen=3*NM;
+  ctx.strokeStyle=runwayOccupied?'#cc2200':'#00cc44'; ctx.lineWidth=6;
+  ctx.beginPath();
+  ctx.moveTo(RWY_X-Math.cos(rwyRad)*rLen/2, RWY_Y-Math.sin(rwyRad)*rLen/2);
+  ctx.lineTo(RWY_X+Math.cos(rwyRad)*rLen/2, RWY_Y+Math.sin(rwyRad)*rLen/2);
+  ctx.stroke(); ctx.lineWidth=1;
+  ctx.fillStyle=runwayOccupied?'#cc2200':'#00cc44'; ctx.font='10px Courier New';
+  ctx.fillText(runwayOccupied?'RWY 26  CLOSED '+Math.ceil(runwayTimer)+'s':'RWY 26', RWY_X+8, RWY_Y-8);
+  // planes
+  for (const p of planes) { if(p.status!=='landed') drawPlane(p); }
+}
+
+function planeColor(p) {
+  const f=p.fuel/p.maxFuel;
+  if(f<.15) return '#ff3300';
+  if(f<.30) return '#ffaa00';
+  if(p.status==='goaround') return '#ff6600';
+  if(p.status==='ils') return '#00ccff';
+  return '#4aff4a';
+}
+function hexA(hex,a){const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);return `rgba(${r},${g},${b},${a})`;}
+
+function drawPlane(p) {
+  const col=planeColor(p), isSel=!!huds[p.id];
+  // trail
+  if(p.trail.length>1){
+    ctx.strokeStyle='rgba(74,255,74,.18)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(p.trail[0].x,p.trail[0].y);
+    p.trail.forEach(pt=>ctx.lineTo(pt.x,pt.y)); ctx.stroke();
+  }
+  // sep ring
+  if(nearestConflict(p)){
+    ctx.beginPath();ctx.arc(p.x,p.y,SEP_MIN/2,0,Math.PI*2);
+    ctx.strokeStyle='rgba(255,80,0,.45)';ctx.lineWidth=1;ctx.stroke();
+  } else if(isSel){
+    ctx.beginPath();ctx.arc(p.x,p.y,SEP_MIN/2,0,Math.PI*2);
+    ctx.strokeStyle='rgba(74,255,74,.1)';ctx.lineWidth=1;ctx.stroke();
+  }
+
+  // 1-min prediction (red dashed)
+  if(p.status==='inbound'||p.status==='goaround'||p.status==='ils'){
+    const hrad=(p.hdg-90)*Math.PI/180, pps=(p.spd*NM)/3600;
+    const px2=p.x+Math.cos(hrad)*pps*PRED_SECS, py2=p.y+Math.sin(hrad)*pps*PRED_SECS;
+    ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(px2,py2);
+    ctx.strokeStyle='rgba(220,60,60,.6)';ctx.lineWidth=1;ctx.setLineDash([5,6]);ctx.stroke();ctx.setLineDash([]);
+    ctx.beginPath();ctx.arc(px2,py2,3,0,Math.PI*2);ctx.fillStyle='rgba(220,60,60,.7)';ctx.fill();
+  }
+  // heading arrow – length proportional to speed (180kt=1.5NM, 249kt=4NM)
+  if(p.status!=='landing'){
+    const hrad=(p.hdg-90)*Math.PI/180;
+    const spdFrac=(p.spd-180)/69; // 0..1 across 180-249kt range
+    const aLen=(1.5 + spdFrac*2.5)*NM; // 1.5–4 NM
+    const ax=p.x+Math.cos(hrad)*aLen, ay=p.y+Math.sin(hrad)*aLen;
+    ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(ax,ay);
+    ctx.strokeStyle=hexA(col,.9);ctx.lineWidth=isSel?2:1.5;ctx.stroke();
+    ctx.save();ctx.translate(ax,ay);ctx.rotate(hrad);
+    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(-3,6);ctx.lineTo(3,6);ctx.closePath();
+    ctx.fillStyle=hexA(col,.9);ctx.fill();ctx.restore();
+  }
+  // square symbol
+  const sz=isSel?6:5;
+  ctx.fillStyle=col; ctx.fillRect(p.x-sz,p.y-sz,sz*2,sz*2);
+  if(isSel){ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.strokeRect(p.x-sz,p.y-sz,sz*2,sz*2);}
+  // label
+  const lx=p.x+sz+5, ly=p.y-3;
+  ctx.font=isSel?'bold 11px Courier New':'10px Courier New';
+  ctx.fillStyle=col; ctx.fillText(p.call,lx,ly);
+  ctx.font='9px Courier New'; ctx.fillStyle='rgba(160,196,160,.7)';
+  ctx.fillText(Math.round(p.spd)+'kt '+fmtHdg(p.hdg),lx,ly+11);
+  ctx.fillStyle='#111'; ctx.fillRect(lx,ly+14,28,3);
+  ctx.fillStyle=col; ctx.fillRect(lx,ly+14,28*Math.max(0,p.fuel/p.maxFuel),3);
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+function updateSidebar() {
+  document.getElementById('s-landed').textContent=landed;
+  document.getElementById('s-score').textContent=score;
+  document.getElementById('s-airborne').textContent=planes.filter(p=>p.status!=='landed').length;
+  document.getElementById('s-time').textContent=fmtTime(elapsed);
+  document.getElementById('s-left').textContent=fmtTime(Math.max(0,SESSION_MAX-elapsed));
+  document.getElementById('s-cmds').textContent=totalCmds+' (HDG:'+hdgCmds+' SPD+:'+spdUpCmds+')';
+  const list=document.getElementById('strip-list');
+  list.innerHTML='';
+  planes.filter(p=>p.status!=='landed').sort((a,b)=>a.fuel-b.fuel).forEach(p=>{
+    const f=p.fuel/p.maxFuel;
+    const div=document.createElement('div');
+    div.className='strip'+(huds[p.id]?' open':'')+(f<.15?' fuel-crit':f<.30?' fuel-warn':'');
+    div.innerHTML=`<div class="strip-call">${p.call}</div>
+      <div class="strip-type">${p.type.label} · ${statusLabel(p.status)}</div>
+      <div class="strip-fuel" style="color:${fuelCol(f)}">⛽ ${fmtSecs(p.fuel)}</div>`;
+    div.onclick=()=>openHud(p.id, true);
+    list.appendChild(div);
+  });
+}
+
+// ── HUD system ─────────────────────────────────────────────────────────────
+let hudZTop = 5;
+
+function openHud(id, fromSidebar) {
+  if (huds[id]) { focusHud(id); return; }
+  const p = planes.find(q=>q.id===id); if(!p) return;
+
+  const layer = document.getElementById('hud-layer');
+  const el = document.createElement('div');
+  el.className = 'hud focused';
+  el.style.zIndex = ++hudZTop;
+
+  // stagger position
+  const count = Object.keys(huds).length;
+  let lx, ly;
+  if (fromSidebar) {
+    lx = 12 + count*22; ly = 12 + count*22;
+  } else {
+    lx = Math.min(p.x+20, W-240); ly = Math.min(Math.max(p.y-60,10), H-380);
+  }
+  el.style.left = lx+'px'; el.style.top = ly+'px';
+
+  el.innerHTML = `
+    <div class="hud-title" data-id="${id}">
+      <span>${p.call} · ${p.type.label}</span>
+      <span class="cls" onclick="destroyHud(${id})">✕</span>
+    </div>
+    <div class="hud-body">
+      <div class="hud-row">HDG <span class="hud-val hv-hdg">---°</span></div>
+      <div class="hud-row">SPD <span class="hud-val hv-spd">--- kt</span></div>
+      <div class="hud-row">FUEL <span class="hud-val hv-fuel">--:--</span></div>
+      <div class="hud-row">STATUS <span class="hud-val hv-status">-</span></div>
+      <div class="cmp-wrap"><canvas class="cmp-canvas" width="120" height="120"></canvas></div>
+      <div class="spd-row">
+        <div class="spd-lbl"><span>SPEED</span><span class="hv-spdval">--- kt</span></div>
+        <input type="range" class="spd-inp" min="${p.type.minSpd}" max="${p.type.maxSpd}" value="${Math.round(p.spd)}">
+      </div>
+      <button class="hud-btn hv-ils" onclick="hudSendILS(${id})">▼ ILS INTERCEPT</button>
+      <button class="hud-btn hv-ga" onclick="hudGoAround(${id})" style="border-color:#ff6600;color:#ff6600;">↺ GO AROUND</button>
+    </div>`;
+
+  layer.appendChild(el);
+
+  // Cache DOM refs
+  const refs = {
+    hdg:   el.querySelector('.hv-hdg'),
+    spd:   el.querySelector('.hv-spd'),
+    fuel:  el.querySelector('.hv-fuel'),
+    status:el.querySelector('.hv-status'),
+    spdVal:el.querySelector('.hv-spdval'),
+    spdSlider: el.querySelector('.spd-inp'),
+    ilsBtn:    el.querySelector('.hv-ils'),
+  };
+  const cc = el.querySelector('.cmp-canvas');
+  const cctx = cc.getContext('2d');
+
+  huds[id] = { el, cctx, refs };
+
+  // Speed slider – penalise on release
+  let spdAtDragStart = Math.round(p.spd);
+  refs.spdSlider.addEventListener('mousedown', () => {
+    const q=planes.find(q=>q.id===id); if(q) spdAtDragStart=Math.round(q.spd);
+  });
+  refs.spdSlider.addEventListener('input', e => {
+    const q=planes.find(q=>q.id===id); if(!q||q.status==='ils'||q.status==='landing') return;
+    q.targetSpd=parseInt(e.target.value);
+    refs.spdVal.textContent=q.targetSpd+' kt';
+  });
+  refs.spdSlider.addEventListener('change', e => {
+    const q=planes.find(q=>q.id===id); if(!q) return;
+    const newSpd=parseInt(e.target.value);
+    totalCmds++;
+    if (newSpd > spdAtDragStart) { spdUpCmds++; score-=3; showMsg(q.call+' SPD+ anrop  -3 pts'); }
+    else if (newSpd < spdAtDragStart) { spdDnCmds++; }  // free
+    spdAtDragStart=newSpd;
+  });
+
+  // Compass drag – count ONE heading command per completed drag
+  cc.addEventListener('mousedown', e => {
+    e.stopPropagation();
+    const q0 = planes.find(q=>q.id===id); if(!q0) return;
+    const hdgAtStart = q0.targetHdg;
+    doCompassMove(e,id,cc,cctx);
+    const onMove = e2 => { doCompassMove(e2,id,cc,cctx); };
+    const onUp = () => {
+      const q = planes.find(q=>q.id===id);
+      if(q && q.status!=='ils' && q.status!=='landing') {
+        const delta = Math.abs(angleDiff(hdgAtStart, q.targetHdg));
+        if(delta > 2) { // only count if heading actually changed >2°
+          hdgCmds++; totalCmds++; score-=2;
+          showMsg(q.call+' HDG anrop  -2 pts');
+        }
+      }
+      window.removeEventListener('mousemove',onMove);
+      window.removeEventListener('mouseup',onUp);
+    };
+    window.addEventListener('mousemove',onMove);
+    window.addEventListener('mouseup',onUp);
+  });
+
+  // Title bar drag
+  const titleBar = el.querySelector('.hud-title');
+  titleBar.addEventListener('mousedown', e => {
+    if (e.target.classList.contains('cls')) return;
+    e.preventDefault(); e.stopPropagation();
+    focusHud(id);
+    const ox=e.clientX-el.offsetLeft, oy=e.clientY-el.offsetTop;
+    const onMove = e2 => {
+      el.style.left=(e2.clientX-ox)+'px';
+      el.style.top=(e2.clientY-oy)+'px';
+    };
+    const onUp = () => { window.removeEventListener('mousemove',onMove); window.removeEventListener('mouseup',onUp); };
+    window.addEventListener('mousemove',onMove);
+    window.addEventListener('mouseup',onUp);
+  });
+
+  // Focus on any click inside hud body (but not title which handles itself)
+  el.querySelector('.hud-body').addEventListener('mousedown', e => { e.stopPropagation(); focusHud(id); });
+
+  refreshHud(id);
+}
+
+function focusHud(id) {
+  Object.values(huds).forEach(h=>h.el.classList.remove('focused'));
+  if (huds[id]) {
+    const el = huds[id].el;
+    el.classList.add('focused');
+    el.style.zIndex=++hudZTop;
+    el.classList.remove('flash');
+    void el.offsetWidth; // reflow to restart animation
+    el.classList.add('flash');
+  }
+}
+
+function destroyHud(id) {
+  if (huds[id]) { huds[id].el.remove(); delete huds[id]; }
+}
+
+function doCompassMove(e,id,cc,cctx) {
+  const rect=cc.getBoundingClientRect();
+  const mx=e.clientX-rect.left-60, my=e.clientY-rect.top-60;
+  const hdg=((Math.atan2(my,mx)*180/Math.PI+90)+360)%360;
+  const p=planes.find(q=>q.id===id); if(!p||p.status==='ils'||p.status==='landing') return;
+  p.targetHdg=hdg;
+  drawCompass(p,cctx);
+  if(huds[id]) huds[id].refs.hdg.textContent=fmtHdg(hdg);
+}
+
+function refreshHud(id) {
+  const h=huds[id]; if(!h) return;
+  const p=planes.find(q=>q.id===id); if(!p) { destroyHud(id); return; }
+  const {refs,cctx}=h;
+  refs.hdg.textContent=fmtHdg(p.hdg);
+  refs.spd.textContent=Math.round(p.spd)+' kt';
+  refs.fuel.textContent=fmtSecs(p.fuel);
+  refs.status.textContent=statusLabel(p.status);
+  refs.spdVal.textContent=Math.round(p.spd)+' kt';
+  refs.spdSlider.value=Math.round(p.spd);
+  const inCone=isInILSCone(p), locked=p.status==='ils'||p.status==='landing'||p.status==='goaround';
+  refs.ilsBtn.disabled=locked||!inCone;
+  const gaBtn=h.el.querySelector('.hv-ga');
+  if(gaBtn) gaBtn.disabled=p.status==='goaround'||p.status==='landed'||p.status==='landing';
+  drawCompass(p,cctx);
+}
+
+function updateAllHuds() {
+  Object.keys(huds).forEach(id=>refreshHud(+id));
+}
+
+
+function hudSendILS(id) {
+  const p=planes.find(q=>q.id===id); if(!p) return;
+  if(runwayOccupied){ showMsg('Runway closed – '+Math.ceil(runwayTimer)+'s remaining'); return; }
+  if(isInILSCone(p)){ p.status='ils'; showMsg(p.call+' – cleared ILS approach'); }
+  else showMsg(p.call+' – not established on ILS');
+}
+
+function hudGoAround(id) {
+  const p=planes.find(q=>q.id===id); if(!p) return;
+  if(p.status==='landed'||p.status==='goaround') return;
+  initiateGoAround(p, 'manual');
+}
+
+// ── Compass drawing ─────────────────────────────────────────────────────────
+function drawCompass(p,c) {
+  const cx=60,cy=60,r=52;
+  c.clearRect(0,0,120,120);
+  c.beginPath();c.arc(cx,cy,r,0,Math.PI*2);c.fillStyle='#060c14';c.fill();
+  c.strokeStyle='#1a3a1a';c.lineWidth=1.5;c.stroke();
+  const card={0:'N',90:'E',180:'S',270:'W'};
+  for(let d=0;d<360;d+=10){
+    const rad=(d-90)*Math.PI/180, inner=d%30===0?r-12:r-7;
+    c.beginPath();c.moveTo(cx+Math.cos(rad)*inner,cy+Math.sin(rad)*inner);
+    c.lineTo(cx+Math.cos(rad)*(r-2),cy+Math.sin(rad)*(r-2));
+    c.strokeStyle=d%30===0?'#3a8a3a':'#1a4a1a';c.lineWidth=d%30===0?1.5:.8;c.stroke();
+    if(card[d]){c.font='bold 8px Courier New';c.fillStyle='#4aff4a';c.textAlign='center';c.textBaseline='middle';
+      c.fillText(card[d],cx+Math.cos(rad)*(r-20),cy+Math.sin(rad)*(r-20));}
+  }
+  // RWY marker
+  const rr=(RWY_HDG-90)*Math.PI/180;
+  c.beginPath();c.moveTo(cx+Math.cos(rr)*(r-12),cy+Math.sin(rr)*(r-12));
+  c.lineTo(cx+Math.cos(rr)*(r-2),cy+Math.sin(rr)*(r-2));
+  c.strokeStyle='#00cc44';c.lineWidth=3;c.stroke();
+  // target arc
+  const tr=(p.targetHdg-90)*Math.PI/180;
+  c.beginPath();c.arc(cx,cy,r-5,-Math.PI/2,tr);c.strokeStyle='rgba(74,255,74,.1)';c.lineWidth=5;c.stroke();
+  // current needle
+  const hr=(p.hdg-90)*Math.PI/180;
+  c.beginPath();c.moveTo(cx,cy);c.lineTo(cx+Math.cos(hr)*(r-5),cy+Math.sin(hr)*(r-5));
+  c.strokeStyle='#4aff4a';c.lineWidth=2;c.stroke();
+  // target needle dashed
+  c.beginPath();c.moveTo(cx,cy);c.lineTo(cx+Math.cos(tr)*(r-5),cy+Math.sin(tr)*(r-5));
+  c.strokeStyle='rgba(74,255,74,.4)';c.lineWidth=1.5;c.setLineDash([3,3]);c.stroke();c.setLineDash([]);
+  c.beginPath();c.arc(cx,cy,3,0,Math.PI*2);c.fillStyle='#4aff4a';c.fill();
+  c.font='bold 12px Courier New';c.fillStyle='#c0ffc0';c.textAlign='center';c.textBaseline='middle';
+  c.fillText(fmtHdg(p.targetHdg),cx,cy+r+10);
+}
+
+// ── Radar interaction ───────────────────────────────────────────────────────
+function onRadarClick(e) {
+  const rect=canvas.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  for (const p of planes) {
+    if(p.status==='landed') continue;
+    if(Math.hypot(p.x-mx,p.y-my)<16){ openHud(p.id,false); return; }
+  }
+}
+function onRadarHover(e) {
+  const rect=canvas.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  canvas.style.cursor=planes.some(p=>p.status!=='landed'&&Math.hypot(p.x-mx,p.y-my)<16)?'pointer':'default';
+}
+
+// ── Session end (time limit) ───────────────────────────────────────────────
+function triggerSessionEnd() {
+  gameOver = true;
+  const avgHdg  = landed > 0 ? (hdgCmds  / landed).toFixed(1) : '–';
+  const avgSpd  = landed > 0 ? ((spdUpCmds+spdDnCmds) / landed).toFixed(1) : '–';
+  const avgTotal= landed > 0 ? (totalCmds / landed).toFixed(1) : '–';
+  document.getElementById('gameover').querySelector('h1').textContent = 'SESSION SLUT';
+  document.getElementById('go-reason').textContent = '';
+  document.getElementById('go-score').innerHTML =
+    'Du landade <b>'+landed+'</b> plan · Poäng: <b>'+score+'</b><br>'+
+    'Du anropade i snitt <b>'+avgHdg+'</b> heading och <b>'+avgSpd+'</b> hastighetsändringar per plan.<br>'+
+    'Sammanslagen <b>'+avgTotal+'</b> anrop per plan.';
+  document.getElementById('gameover').style.display='flex';
+}
+
+// ── Game over ───────────────────────────────────────────────────────────────
+function triggerGameOver(reason) {
+  gameOver=true;
+  document.getElementById('go-reason').textContent=reason;
+  const _avgHdg  = landed > 0 ? (hdgCmds  / landed).toFixed(1) : '–';
+  const _avgSpd  = landed > 0 ? ((spdUpCmds+spdDnCmds) / landed).toFixed(1) : '–';
+  const _avgTotal= landed > 0 ? (totalCmds / landed).toFixed(1) : '–';
+  document.getElementById('go-score').innerHTML =
+    'Du landade <b>'+landed+'</b> plan · Poäng: <b>'+score+'</b><br>'+
+    'Du anropade i snitt <b>'+_avgHdg+'</b> heading och <b>'+_avgSpd+'</b> hastighetsändringar per plan.<br>'+
+    'Sammanslagen <b>'+_avgTotal+'</b> anrop per plan.';
+  document.getElementById('gameover').style.display='flex';
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+function angleDiff(a,b){let d=b-a;while(d>180)d-=360;while(d<-180)d+=360;return d;}
+function fmtHdg(h){return String(Math.round(((h%360)+360)%360)).padStart(3,'0')+'°';}
+function fmtTime(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');}
+function fmtSecs(s){if(s<=0)return '0:00';const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+String(sec).padStart(2,'0');}
+function fuelCol(f){return f<.15?'#ff3300':f<.30?'#ffaa00':'#4aff4a';}
+function statusLabel(s){return {inbound:'INBOUND',ils:'ON ILS',landing:'LANDING',landed:'LANDED',goaround:'GO AROUND'}[s]||s;}
+
+let msgT;
+function showMsg(txt){
+  const el=document.getElementById('msg-bar');
+  el.textContent='▶ '+txt; el.classList.add('show');
+  clearTimeout(msgT); msgT=setTimeout(()=>el.classList.remove('show'),3500);
+}
+
+initGame();
+</script>
+
+<!-- ── MENU OVERLAY ── -->
+<div id="menu" style="
+  position:fixed; inset:0; background:#0a0f1a;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:32px; z-index:100; font-family:'Courier New',monospace;">
+
+  <div style="text-align:center;">
+    <div style="color:#4aff4a; font-size:36px; letter-spacing:6px; font-weight:bold;">ARLANDA ATC</div>
+    <div style="color:#3a6a3a; font-size:12px; letter-spacing:3px; margin-top:6px;">APPROACH CONTROL SIMULATOR</div>
+  </div>
+
+  <div style="display:flex; gap:40px; align-items:flex-start;">
+
+    <!-- Session time -->
+    <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+      <div style="color:#6a9a6a; font-size:11px; letter-spacing:2px;">SESSIONSTID</div>
+      <button class="menu-opt selected" id="m-15" onclick="menuSelect('time',15)">15 MIN</button>
+      <button class="menu-opt" id="m-30" onclick="menuSelect('time',30)">30 MIN</button>
+    </div>
+
+    <div style="width:1px; background:#1a3a1a; align-self:stretch;"></div>
+
+    <!-- Max planes -->
+    <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+      <div style="color:#6a9a6a; font-size:11px; letter-spacing:2px;">MAX ANTAL PLAN</div>
+      <button class="menu-opt selected" id="m-5" onclick="menuSelect('planes',5)">5 PLAN</button>
+      <button class="menu-opt" id="m-7" onclick="menuSelect('planes',7)">7 PLAN</button>
+      <button class="menu-opt" id="m-9" onclick="menuSelect('planes',9)">9 PLAN</button>
+    </div>
+
+  </div>
+
+  <button onclick="startFromMenu()" style="
+    margin-top:8px; padding:14px 48px;
+    background:#0d1f0d; border:1px solid #4aff4a; color:#4aff4a;
+    font-family:'Courier New',monospace; font-size:15px; letter-spacing:3px;
+    cursor:pointer; border-radius:4px; transition:background .15s;">
+    STARTA SESSION
+  </button>
+
+  <div style="color:#2a4a2a; font-size:10px; letter-spacing:1px; text-align:center; line-height:1.8;">
+    HDG-anrop: −2 pts &nbsp;·&nbsp; SPD+-anrop: −3 pts &nbsp;·&nbsp; Go-around: −20 pts<br>
+    Paus kostar 1 pt / 10 sek &nbsp;·&nbsp; Bränslestopp eller kollision = game over
+  </div>
+</div>
+
+<style>
+.menu-opt {
+  padding: 10px 28px;
+  background: #0d1f0d;
+  border: 1px solid #1a3a1a;
+  color: #4a8a4a;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  letter-spacing: 2px;
+  cursor: pointer;
+  border-radius: 3px;
+  width: 140px;
+  transition: all .15s;
+}
+.menu-opt:hover { border-color: #4aff4a; color: #c0ffc0; }
+.menu-opt.selected { background: #1a4a00; border-color: #4aff4a; color: #4aff4a; font-weight: bold; }
+</style>
+
+</body>
+</html>
