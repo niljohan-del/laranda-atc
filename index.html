@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>ATC – Arlanda Approach</title>
+<title>ATC – Laranda Approach</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospace; overflow: hidden; user-select: none; }
@@ -86,7 +86,7 @@ body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospac
     </div>
   </div>
   <div id="sidebar">
-    <h2>ARLANDA ATC</h2>
+    <h2>LARANDA ATC</h2>
     <div class="stat-row"><span>LANDED</span><span class="stat-val" id="s-landed">0</span></div>
     <div class="stat-row"><span>SCORE</span><span class="stat-val" id="s-score">0</span></div>
     <div class="stat-row"><span>AIRBORNE</span><span class="stat-val" id="s-airborne">0</span></div>
@@ -395,7 +395,7 @@ function draw() {
   ctx.save();
   ctx.font='bold 10px Courier New'; ctx.fillStyle='#2a7a2a';
   ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('ARLANDA TMA', RWY_X, RWY_Y - 20*NM - 14);
+  ctx.fillText('LARANDA TMA', RWY_X, RWY_Y - 20*NM - 14);
   ctx.textAlign='start';
   ctx.restore();
   // ILS cone
@@ -789,12 +789,16 @@ initGame();
 
 <!-- ── MENU OVERLAY ── -->
 <div id="menu" style="
-  position:fixed; inset:0; background:#0a0f1a;
+  position:fixed; inset:0;
+  background-image: url('assets/bg.png');
+  background-size: cover; background-position: center;
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:32px; z-index:100; font-family:'Courier New',monospace;">
+  <div style="position:absolute;inset:0;background:rgba(5,10,18,0.72);"></div>
+  <div style="position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:32px;">
 
   <div style="text-align:center;">
-    <div style="color:#4aff4a; font-size:36px; letter-spacing:6px; font-weight:bold;">ARLANDA ATC</div>
+    <div style="color:#4aff4a; font-size:36px; letter-spacing:6px; font-weight:bold;">LARANDA ATC</div>
     <div style="color:#3a6a3a; font-size:12px; letter-spacing:3px; margin-top:6px;">APPROACH CONTROL SIMULATOR</div>
   </div>
 
@@ -827,9 +831,10 @@ initGame();
     STARTA SESSION
   </button>
 
-  <div style="color:#2a4a2a; font-size:10px; letter-spacing:1px; text-align:center; line-height:1.8;">
+  <div style="color:#4a7a4a; font-size:10px; letter-spacing:1px; text-align:center; line-height:1.8;">
     HDG-anrop: −2 pts &nbsp;·&nbsp; SPD+-anrop: −3 pts &nbsp;·&nbsp; Go-around: −20 pts<br>
     Paus kostar 1 pt / 10 sek &nbsp;·&nbsp; Bränslestopp eller kollision = game over
+  </div>
   </div>
 </div>
 
