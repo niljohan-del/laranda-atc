@@ -151,8 +151,7 @@ async function submitScore() {
       document.getElementById('go-submit').style.display='none';
       loadHighscore();
     } else {
-      const errText = await res.text();
-      document.getElementById('go-save-msg').textContent = 'Fel '+res.status+': '+errText.slice(0,80);
+      document.getElementById('go-save-msg').textContent = 'Fel – försök igen.';
       document.getElementById('go-save-btn').disabled = false;
     }
   } catch(e) {
