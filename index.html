@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>ATC – Laranda Approach</title>
+<title>ATC 2.0 – Laranda APP/DEP</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospace; overflow: hidden; user-select: none; }
@@ -108,10 +108,7 @@ body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospac
     <div class="stat-row"><span>KVAR</span><span class="stat-val" id="s-left">30:00</span></div>
     <div class="stat-row"><span>ANROP</span><span class="stat-val" id="s-cmds">0</span></div>
     <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
-    <div style="display:flex;gap:6px;">
-      <button id="theme-btn" onclick="toggleTheme()" style="flex:1;padding:5px;background:#0d1f0d;border:1px solid #2a5a2a;color:#4aff4a;font-family:'Courier New',monospace;font-size:10px;cursor:pointer;border-radius:3px;letter-spacing:1px;">☀ LJUST</button>
-      <button onclick="showHelp()" style="padding:5px 9px;background:#0d1f0d;border:1px solid #2a5a2a;color:#4aff4a;font-family:'Courier New',monospace;font-size:13px;cursor:pointer;border-radius:3px;" title="Spelregler">?</button>
-    </div>
+    <button id="theme-btn" onclick="toggleTheme()" style="padding:5px;background:#0d1f0d;border:1px solid #2a5a2a;color:#4aff4a;font-family:'Courier New',monospace;font-size:10px;cursor:pointer;border-radius:3px;letter-spacing:1px;">☀ LJUST</button>
     <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
     <div style="color:#4aff4a;font-size:10px;letter-spacing:1px;margin-bottom:4px">SIM SPEED</div>
     <div id="speed-ctrl">
@@ -131,6 +128,15 @@ body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospac
       ILS: HDG ~270°, enter cone<br>
       Sep: 3 NM minimum
     </div>
+  </div>
+  <div id="dep-panel" style="width:160px;background:#060c14;border-left:1px solid #1a3a1a;display:flex;flex-direction:column;padding:10px;gap:4px;font-size:10px;font-family:'Courier New',monospace;">
+    <div style="color:#00ccff;font-size:10px;letter-spacing:1px;margin-bottom:4px;border-bottom:1px solid #1a3a1a;padding-bottom:4px;">DEPARTURES</div>
+    <div style="color:#6a9a6a;font-size:9px;margin-bottom:4px;">RWY 01/19 · AUTO</div>
+    <div class="stat-row"><span>DEP</span><span class="stat-val" id="s-departed" style="color:#00ccff;">0</span></div>
+    <div class="stat-row"><span>AIRBORNE</span><span class="stat-val" id="s-dep-air">0</span></div>
+    <div style="border-bottom:1px solid #1a3a1a;margin:4px 0"></div>
+    <div style="color:#4aff4a;font-size:10px;letter-spacing:1px;margin-bottom:4px">DEP STRIPS</div>
+    <div id="dep-strip-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
   </div>
 </div>
 <script>
@@ -196,6 +202,12 @@ const PRED_SECS = 60;
 let MAX_PLANES = 5;
 let SESSION_MAX = 30 * 60;
 
+// ── Runway 01/19 (Departure) constants ────────────────────────────────────
+const DEP_RWY_HDG = 190;          // Departure heading (southbound)
+const DEP_SPAWN_INT = 90000;      // 90 seconds between departures (ms)
+const DEP_MAX_AI_CMDS = 2;        // max AI heading commands per dep plane
+const DEP_EXIT_DIST = 22;         // NM from center before plane exits sector
+
 const TYPES = [
   { label:'B737', minSpd:180, maxSpd:249, weight:1.0 },
   { label:'A320', minSpd:180, maxSpd:249, weight:1.0 },
@@ -207,7 +219,7 @@ const AIRLINES = ['SAS','SK','TK','LH','AY','BA','FR','D8','WF','KL','AZ','IB'];
 
 // ── State ──────────────────────────────────────────────────────────────────
 let canvas, ctx;
-let W, H, RWY_X, RWY_Y;
+let W, H, RWY_X, RWY_Y, DEP_RWY_X, DEP_RWY_Y;
 let planes = [], score = 0, landed = 0, gameOver = false;
 let elapsed = 0, lastTime = 0, spawnTimer = 0, spawnInterval = SPAWN_INT_START, nextId = 1;
 let runwayOccupied = false, runwayTimer = 0;
@@ -216,6 +228,14 @@ let vZoom = 1, vOX = 0, vOY = 0; // viewport zoom & offset
 let totalCmds = 0, hdgCmds = 0, spdUpCmds = 0, spdDnCmds = 0;
 let LM = false; // light mode
 const landedLog = []; // {call, type, pts, cmds, trail}
+
+// ── Departure state ────────────────────────────────────────────────────────
+let depPlanes = [];            // active departure aircraft
+let depSpawnTimer = 0;
+let depDeparted = 0;           // total departed
+let depNextId = 10000;         // unique IDs start high to avoid collision
+let depRwyOccupied = false, depRwyTimer = 0;
+const DEP_AIRLINES = ['SK','SAS','TK','LH','BA','AY','FR','WF','KL','AZ'];
 
 // ── HUD registry ──────────────────────────────────────────────────────────
 // huds[planeId] = { el, cctx, refs:{hdg,spd,fuel,status,spdVal,spdSlider,holdBtn,ilsBtn} }
@@ -266,6 +286,8 @@ function applyTheme() {
     document.querySelectorAll('.spd-btn.active').forEach(e=>e.style.background='#2a8a2a');
     document.getElementById('landed-panel').style.background='#d8e8d8';
     document.getElementById('landed-panel').style.borderColor='#4a8a4a';
+    document.getElementById('dep-panel').style.background='#d8e8e8';
+    document.getElementById('dep-panel').style.borderColor='#4a7a8a';
     document.getElementById('theme-btn').textContent='🌙 MÖRKT';
   } else {
     document.body.style.background = '#0a0f1a';
@@ -280,6 +302,8 @@ function applyTheme() {
     document.querySelectorAll('.spd-btn.active').forEach(e=>e.style.background='#1a3a1a');
     document.getElementById('landed-panel').style.background='#060c14';
     document.getElementById('landed-panel').style.borderColor='#1a3a1a';
+    document.getElementById('dep-panel').style.background='#060c14';
+    document.getElementById('dep-panel').style.borderColor='#1a3a1a';
     document.getElementById('theme-btn').textContent='☀ LJUST';
   }
 }
@@ -344,6 +368,10 @@ function initGame() {
   totalCmds = 0; hdgCmds = 0; spdUpCmds = 0; spdDnCmds = 0;
   landedLog.length = 0;
   paused = false; pauseTimer = 0;
+  // Departure reset
+  depPlanes = []; depDeparted = 0; depNextId = 10000;
+  depSpawnTimer = 45000; // first departure after 45s
+  depRwyOccupied = false; depRwyTimer = 0;
   setSimSpeed(1);
   // destroy all open HUDs
   Object.keys(huds).forEach(id => destroyHud(+id));
@@ -363,6 +391,8 @@ function resize() {
   NM = Math.max(12, Math.min(NM, 28)); // clamp 12–28
   // Center runway slightly left of radar center (ILS cone opens to the right)
   RWY_X = W * 0.45; RWY_Y = H * 0.5;
+  // Departure runway 01/19 – slightly left of center
+  DEP_RWY_X = RWY_X - 4*NM; DEP_RWY_Y = RWY_Y;
   SEP_MIN = 3 * NM;
   ILS_RANGE = 10 * NM;
 }
@@ -407,7 +437,15 @@ function loop(ts) {
     spawnPlane();
   }
   if (runwayOccupied) { runwayTimer -= dt; if (runwayTimer <= 0) runwayOccupied = false; }
+  if (depRwyOccupied) { depRwyTimer -= dt; if (depRwyTimer <= 0) depRwyOccupied = false; }
+  // Departure spawn
+  depSpawnTimer += dt * 1000;
+  if (depSpawnTimer >= DEP_SPAWN_INT) {
+    depSpawnTimer = 0;
+    spawnDepPlane();
+  }
   updatePlanes(dt);
+  updateDepPlanes(dt);
   checkCollisions();
   draw();
   updateSidebar();
@@ -429,6 +467,65 @@ function spawnPlane() {
   planes.push({ id:nextId++, call, type, x, y, hdg, targetHdg:hdg, spd, targetSpd:spd, fuel, maxFuel:fuel,
     status:'inbound', holdAngle:0, holdCx:0, holdCy:0, trail:[], fullTrail:[], goAroundTimer:0, planeCmds:0, showTrail:true });
   showMsg(call + ' – entering sector');
+}
+
+// ── Departure spawn & update ───────────────────────────────────────────────
+function spawnDepPlane() {
+  if (depRwyOccupied) return; // runway busy
+  const type = TYPES[Math.floor(Math.random()*TYPES.length)];
+  const call = DEP_AIRLINES[Math.floor(Math.random()*DEP_AIRLINES.length)] + (200+Math.floor(Math.random()*799));
+  // Start on departure runway heading south
+  const spd = type.minSpd + 20 + Math.random()*40;
+  depRwyOccupied = true; depRwyTimer = 50;
+  const dp = {
+    id: depNextId++, call, type,
+    x: DEP_RWY_X, y: DEP_RWY_Y,
+    hdg: DEP_RWY_HDG, targetHdg: DEP_RWY_HDG,
+    spd, targetSpd: spd,
+    status: 'departing',
+    trail: [], fullTrail: [],
+    aiCmds: 0,          // how many AI heading tweaks done
+    nextAiTimer: 15 + Math.random()*20 // seconds before first AI cmd
+  };
+  depPlanes.push(dp);
+  showMsg(call + ' – departing RWY 01');
+}
+
+function updateDepPlanes(dt) {
+  const remove = [];
+  for (const p of depPlanes) {
+    p.fuel = 9999; // departures have infinite fuel for UI purposes
+    // AI heading commands – occasional slight variation southbound
+    if (p.aiCmds < DEP_MAX_AI_CMDS) {
+      p.nextAiTimer -= dt;
+      if (p.nextAiTimer <= 0) {
+        // Random heading 160-200°
+        const variation = 160 + Math.floor(Math.random()*40);
+        p.targetHdg = variation;
+        p.aiCmds++;
+        p.nextAiTimer = 20 + Math.random()*25;
+      }
+    }
+    // Turn toward target
+    const d = angleDiff(p.hdg, p.targetHdg);
+    const m = TURN_RATE * dt;
+    p.hdg = Math.abs(d) < m ? p.targetHdg : p.hdg + Math.sign(d)*m;
+    p.hdg = ((p.hdg%360)+360)%360;
+    // Move forward
+    const rad = (p.hdg-90)*Math.PI/180, pps = (p.spd*NM)/3600;
+    p.x += Math.cos(rad)*pps*dt;
+    p.y += Math.sin(rad)*pps*dt;
+    // Trail
+    const pt={x:p.x,y:p.y}; p.trail.push(pt); if(p.trail.length>14) p.trail.shift();
+    // Exit sector?
+    const dist = Math.hypot(p.x - DEP_RWY_X, p.y - DEP_RWY_Y);
+    if (dist > DEP_EXIT_DIST * NM) {
+      depDeparted++;
+      remove.push(p.id);
+      showMsg(p.call + ' – exiting sector ✓');
+    }
+  }
+  depPlanes = depPlanes.filter(p => !remove.includes(p.id));
 }
 
 // ── Update ─────────────────────────────────────────────────────────────────
@@ -586,7 +683,7 @@ function draw() {
   ctx.lineTo(RWY_X+Math.cos(rwyRad)*rLen/2, RWY_Y+Math.sin(rwyRad)*rLen/2);
   ctx.stroke(); ctx.lineWidth=1;
   ctx.fillStyle=runwayOccupied?'#cc2200':(LM?'#006600':'#00cc44'); ctx.font='bold 10px Courier New';
-  ctx.fillText(runwayOccupied?'RWY 26  CLOSED '+Math.ceil(runwayTimer)+'s':'RWY 26', RWY_X+8*iz, RWY_Y-8*iz);
+  ctx.fillText(runwayOccupied?'RWY 27L  CLOSED '+Math.ceil(runwayTimer)+'s':'RWY 27L', RWY_X+8*iz, RWY_Y-8*iz);
   // Persistent landed trails (white dashed)
   for (const entry of landedLog) {
     if (!entry.showTrail || entry.trail.length < 2) continue;
@@ -600,7 +697,78 @@ function draw() {
   }
   // planes
   for (const p of planes) { if(p.status!=='landed') drawPlane(p,iz); }
+  // departure planes
+  for (const p of depPlanes) { drawDepPlane(p, iz); }
+  // departure runway 01/19
+  drawDepRunway(iz);
   ctx.restore();
+}
+
+function drawDepRunway(iz) {
+  const rwyRad = (0-90)*Math.PI/180; // north-south
+  const rLen = 2.5*NM;
+  // Runway line
+  ctx.strokeStyle = depRwyOccupied ? '#cc2200' : '#00aaff';
+  ctx.lineWidth = 5*iz;
+  ctx.beginPath();
+  ctx.moveTo(DEP_RWY_X - Math.cos(rwyRad)*rLen/2, DEP_RWY_Y - Math.sin(rwyRad)*rLen/2);
+  ctx.lineTo(DEP_RWY_X + Math.cos(rwyRad)*rLen/2, DEP_RWY_Y + Math.sin(rwyRad)*rLen/2);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  // Label
+  ctx.font = 'bold 10px Courier New';
+  if (depRwyOccupied) {
+    ctx.fillStyle = '#cc2200';
+    ctx.fillText('RWY 01  CLOSED '+Math.ceil(depRwyTimer)+'s', DEP_RWY_X + 6*iz, DEP_RWY_Y - 16*iz);
+  } else {
+    ctx.fillStyle = LM ? '#003388' : '#00aaff';
+    ctx.fillText('RWY 01/19', DEP_RWY_X + 6*iz, DEP_RWY_Y - 16*iz);
+  }
+  // Small arrow indicating departure direction (south)
+  ctx.strokeStyle = LM ? '#003388' : '#00aaff';
+  ctx.lineWidth = 1.5*iz;
+  const arrY = DEP_RWY_Y + rLen/2 + 4*iz;
+  ctx.beginPath();
+  ctx.moveTo(DEP_RWY_X, DEP_RWY_Y + rLen/2);
+  ctx.lineTo(DEP_RWY_X, arrY);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function drawDepPlane(p, iz=1) {
+  const col = LM ? '#cc6600' : '#00ccff'; // cyan in dark, orange in light
+  // trail
+  if (p.trail.length > 1) {
+    ctx.strokeStyle = LM ? 'rgba(200,100,0,.35)' : 'rgba(0,200,255,.35)';
+    ctx.lineWidth = 1.8*iz;
+    ctx.beginPath(); ctx.moveTo(p.trail[0].x, p.trail[0].y);
+    p.trail.forEach(pt=>ctx.lineTo(pt.x,pt.y)); ctx.stroke();
+  }
+  // heading arrow
+  const hrad = (p.hdg-90)*Math.PI/180;
+  const aLen = 2*NM;
+  const ax = p.x+Math.cos(hrad)*aLen, ay = p.y+Math.sin(hrad)*aLen;
+  ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(ax,ay);
+  ctx.strokeStyle = col; ctx.lineWidth = 2*iz; ctx.stroke();
+  ctx.save(); ctx.translate(ax,ay); ctx.rotate(hrad);
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-3*iz,6*iz); ctx.lineTo(3*iz,6*iz); ctx.closePath();
+  ctx.fillStyle = col; ctx.fill(); ctx.restore();
+  // diamond symbol for departure
+  const sz = 5*iz;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(Math.PI/4);
+  ctx.fillStyle = col;
+  ctx.fillRect(-sz/2, -sz/2, sz, sz);
+  ctx.restore();
+  // label
+  const lx = p.x + sz + 4*iz, ly = p.y - 3*iz;
+  ctx.font = '10px Courier New';
+  ctx.fillStyle = LM ? '#883300' : col;
+  ctx.fillText(p.call, lx, ly);
+  ctx.font = '9px Courier New';
+  ctx.fillStyle = LM ? 'rgba(180,80,0,.8)' : 'rgba(0,200,255,.8)';
+  ctx.fillText(Math.round(p.spd)+'kt '+fmtHdg(p.hdg), lx, ly+11*iz);
 }
 
 function planeColor(p) {
@@ -717,6 +885,34 @@ function updateSidebar() {
   document.getElementById('s-time').textContent=fmtTime(elapsed);
   document.getElementById('s-left').textContent=fmtTime(Math.max(0,SESSION_MAX-elapsed));
   document.getElementById('s-cmds').textContent=totalCmds+' (HDG:'+hdgCmds+' SPD+:'+spdUpCmds+')';
+  // Departure panel
+  document.getElementById('s-departed').textContent = depDeparted;
+  document.getElementById('s-dep-air').textContent = depPlanes.length;
+  // Departure strips
+  const depList = document.getElementById('dep-strip-list');
+  depPlanes.forEach(p => {
+    let div = depList.querySelector('[data-dpid="'+p.id+'"]');
+    if (!div) {
+      div = document.createElement('div');
+      div.dataset.dpid = p.id;
+      div.style.cssText = 'background:#0a1f2a;border:1px solid #1a3a4a;border-left:3px solid #00aaff;padding:4px 6px;border-radius:2px;font-size:10px;';
+      const c = document.createElement('div');
+      c.style.cssText = 'color:#00ccff;font-weight:bold;font-size:11px;';
+      c.textContent = p.call;
+      const t = document.createElement('div');
+      t.style.cssText = 'color:#6a9aaa;font-size:9px;margin-top:1px;';
+      t.className = 'dp-type';
+      div.appendChild(c);
+      div.appendChild(t);
+      depList.appendChild(div);
+    }
+    const typeEl = div.querySelector('.dp-type');
+    if (typeEl) typeEl.textContent = p.type.label+' · '+Math.round(p.spd)+'kt · HDG'+fmtHdg(p.hdg);
+  });
+  // Remove departed strips
+  depList.querySelectorAll('[data-dpid]').forEach(el => {
+    if (!depPlanes.find(p => p.id === Number(el.dataset.dpid))) el.remove();
+  });
   // ── Flight strips – stable DOM, only update text/classes ──
   const list=document.getElementById('strip-list');
   const active=planes.filter(p=>p.status!=='landed').sort((a,b)=>a.fuel-b.fuel);
@@ -1098,7 +1294,7 @@ initGame();
 
   <div style="text-align:center;">
     <div style="color:#4aff4a; font-size:32px; letter-spacing:4px; font-weight:bold; font-family:Arial,sans-serif;">LARANDA ATC</div>
-    <div style="color:#80d080; font-size:11px; letter-spacing:3px; margin-top:2px; font-weight:bold; font-family:Arial,sans-serif;">APPROACH CONTROL SIMULATOR</div>
+    <div style="color:#80d080; font-size:11px; letter-spacing:3px; margin-top:2px; font-weight:bold; font-family:Arial,sans-serif;">APPROACH & DEPARTURE</div>
   </div>
 
   <div style="display:flex; gap:40px; align-items:flex-start;">
@@ -1135,36 +1331,43 @@ initGame();
     Paus kostar 1 pt / 10 sek &nbsp;·&nbsp; Bränslestopp eller kollision = game over
   </div>
 
-  <!-- SPELREGLER -->
-  <div style="width:100%; border-top:1px solid rgba(74,255,74,0.15); margin-top:4px; padding-top:16px;">
-    <div style="color:#4aff4a; font-size:11px; letter-spacing:2px; font-weight:bold; font-family:Arial,sans-serif; margin-bottom:12px; text-align:center;">SPELREGLER</div>
-    <div style="display:flex; gap:24px; flex-wrap:wrap; justify-content:center;">
+  <!-- SPELREGLER v2 -->
+  <div style="width:100%;border-top:1px solid rgba(74,255,74,0.15);margin-top:8px;padding-top:16px;">
+    <div style="color:#4aff4a;font-size:11px;letter-spacing:2px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:14px;text-align:center;">SPELREGLER</div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;justify-content:center;">
 
-      <div style="min-width:180px; max-width:220px;">
-        <div style="color:#c0ffc0; font-size:10px; letter-spacing:1px; font-weight:bold; font-family:Arial,sans-serif; margin-bottom:6px;">MÅL</div>
-        <p style="color:#80c080; font-size:10px; line-height:1.8; font-family:Arial,sans-serif;">
-          Led inkommande flygplan till landning på bana 27L. Undvik kollisioner och håll koll på bränslenivåerna — bränslestopp eller kollision avslutar sessionen omedelbart.
+      <div style="min-width:170px;max-width:210px;">
+        <div style="color:#c0ffc0;font-size:10px;letter-spacing:1px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">MÅL</div>
+        <p style="color:#80c080;font-size:10px;line-height:1.8;font-family:Arial,sans-serif;">
+          Led inkommande plan till landning på bana 27L. Undvik kollisioner och håll koll på bränslet — bränslestopp eller kollision avslutar sessionen.
         </p>
       </div>
 
-      <div style="min-width:180px; max-width:220px;">
-        <div style="color:#c0ffc0; font-size:10px; letter-spacing:1px; font-weight:bold; font-family:Arial,sans-serif; margin-bottom:6px;">KONTROLLER</div>
-        <p style="color:#80c080; font-size:10px; line-height:1.8; font-family:Arial,sans-serif;">
-          Klicka på ett plan eller en flight strip för att öppna HUD. Ge kurs via kompassrutan och justera fart med reglaget. Aktivera ILS när planet är i konen (~270°) för automatisk landning.
+      <div style="min-width:170px;max-width:210px;">
+        <div style="color:#c0ffc0;font-size:10px;letter-spacing:1px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">KONTROLLER</div>
+        <p style="color:#80c080;font-size:10px;line-height:1.8;font-family:Arial,sans-serif;">
+          Klicka ett plan eller strip → öppna HUD. Ge kurs via kompassrutan, justera fart med reglaget. Aktivera ILS när planet är i gröna konen (~270°) för automatisk landning.
         </p>
       </div>
 
-      <div style="min-width:180px; max-width:220px;">
-        <div style="color:#c0ffc0; font-size:10px; letter-spacing:1px; font-weight:bold; font-family:Arial,sans-serif; margin-bottom:6px;">SEPARATION &amp; BRÄNSLE</div>
-        <p style="color:#80c080; font-size:10px; line-height:1.8; font-family:Arial,sans-serif;">
-          Håll minst <b style="color:#c0ffc0;">3 NM</b> mellan alla plan — konflikt visas i rött. Strippens kant lyser <b style="color:#ffaa00;">gult</b> vid lågt bränsle och <b style="color:#ff4400;">rött</b> vid kritiskt läge.
+      <div style="min-width:170px;max-width:210px;">
+        <div style="color:#c0ffc0;font-size:10px;letter-spacing:1px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">SEPARATION &amp; BRÄNSLE</div>
+        <p style="color:#80c080;font-size:10px;line-height:1.8;font-family:Arial,sans-serif;">
+          Håll minst <b style="color:#c0ffc0;">3 NM</b> mellan alla plan — konflikt visas i rött. Stripens kant lyser <b style="color:#ffaa00;">gult</b> (varning) och <b style="color:#ff4400;">rött</b> (kritiskt) vid lågt bränsle.
         </p>
       </div>
 
-      <div style="min-width:180px; max-width:220px;">
-        <div style="color:#c0ffc0; font-size:10px; letter-spacing:1px; font-weight:bold; font-family:Arial,sans-serif; margin-bottom:6px;">TIPS</div>
-        <p style="color:#80c080; font-size:10px; line-height:1.8; font-family:Arial,sans-serif;">
-          Bygg en klassisk trafikrunda (downwind–base–final). Använd holding patterns vid hög trafik. Minimera anrop — varje HDG/SPD-justering kostar poäng.
+      <div style="min-width:170px;max-width:210px;">
+        <div style="color:#00ccff;font-size:10px;letter-spacing:1px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">AVGÅNGAR – RWY 01/19</div>
+        <p style="color:#80c080;font-size:10px;line-height:1.8;font-family:Arial,sans-serif;">
+          Var 90:e sekund lyfter ett avgångsplan automatiskt söderut. Dessa plan (cyan ◆) styrs av systemet — du kan <b style="color:#c0ffc0;">inte</b> anropa dem. Håll separation även mot avgångarna!
+        </p>
+      </div>
+
+      <div style="min-width:170px;max-width:210px;">
+        <div style="color:#c0ffc0;font-size:10px;letter-spacing:1px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">TIPS</div>
+        <p style="color:#80c080;font-size:10px;line-height:1.8;font-family:Arial,sans-serif;">
+          Bygg en downwind–base–final-runda. Använd holding vid hög trafik. Minimera anrop — varje HDG/SPD-justering kostar poäng.
         </p>
       </div>
 
@@ -1191,87 +1394,6 @@ initGame();
 .menu-opt:hover { border-color: #4aff4a; color: #ffffff; background: rgba(30,80,30,0.7); }
 .menu-opt.selected { background: #1a5a10; border-color: #4aff4a; color: #ffffff; box-shadow: 0 0 10px rgba(74,255,74,0.3); }
 </style>
-
-
-<!-- ── HELP POPUP ── -->
-<div id="help-overlay" onclick="if(event.target===this)hideHelp()" style="
-  display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75);
-  z-index:200; align-items:center; justify-content:center;">
-  <div style="
-    background:#060c14; border:1px solid #2a6a2a; border-radius:10px;
-    max-width:560px; width:92%; max-height:88vh; overflow-y:auto;
-    padding:28px 32px; font-family:'Courier New',monospace; color:#a0c4a0;
-    box-shadow:0 0 40px rgba(74,255,74,0.15); position:relative;">
-    <div onclick="hideHelp()" style="
-      position:absolute; top:14px; right:18px; color:#6a9a6a;
-      font-size:20px; cursor:pointer; line-height:1;" title="Stäng">✕</div>
-
-    <div style="color:#4aff4a; font-size:16px; letter-spacing:3px; font-weight:bold; margin-bottom:20px; font-family:Arial,sans-serif;">SPELREGLER — LARANDA ATC</div>
-
-    <div style="color:#c0ffc0; font-size:12px; letter-spacing:1px; margin-bottom:6px; font-family:Arial,sans-serif; font-weight:bold;">MÅL</div>
-    <p style="font-size:11px; line-height:1.9; margin-bottom:16px;">
-      Du är flygledare på Laranda Approach. Ditt uppdrag är att leda inkommande flygplan säkert till landning på bana 27L innan sessionstiden tar slut — utan kollisioner och utan att något plan får slut på bränsle.
-    </p>
-
-    <div style="color:#c0ffc0; font-size:12px; letter-spacing:1px; margin-bottom:6px; font-family:Arial,sans-serif; font-weight:bold;">GRUNDKONTROLLER</div>
-    <table style="width:100%; font-size:11px; line-height:2; border-collapse:collapse; margin-bottom:16px;">
-      <tr><td style="color:#4aff4a; width:38%; padding-right:12px;">Klicka på plan / strip</td><td>Öppnar HUD för det flygplanet</td></tr>
-      <tr><td style="color:#4aff4a;">Dra HUD-titel</td><td>Flytta kontrollpanelen</td></tr>
-      <tr><td style="color:#4aff4a;">Kompassruta</td><td>Klicka för att ge ny kurs (HDG)</td></tr>
-      <tr><td style="color:#4aff4a;">Hastighetsreglage</td><td>Dra för att ange fart (knop)</td></tr>
-      <tr><td style="color:#4aff4a;">HOLD</td><td>Aktiverar/avaktiverar holding pattern</td></tr>
-      <tr><td style="color:#4aff4a;">ILS</td><td>Planet fångar in och landar automatiskt</td></tr>
-    </table>
-
-    <div style="color:#c0ffc0; font-size:12px; letter-spacing:1px; margin-bottom:6px; font-family:Arial,sans-serif; font-weight:bold;">ILS-LANDNING</div>
-    <p style="font-size:11px; line-height:1.9; margin-bottom:16px;">
-      Aktivera ILS när planet befinner sig inom den gröna inkortningskonen och flyger ungefär <b style="color:#c0ffc0;">270°</b> (± 30°). Planet sätter då kurs automatiskt och landar. Är vinkeln eller positionen fel avbryts inflygningen med <b style="color:#ff6060;">go-around (−20 p)</b>.
-    </p>
-
-    <div style="color:#c0ffc0; font-size:12px; letter-spacing:1px; margin-bottom:6px; font-family:Arial,sans-serif; font-weight:bold;">SEPARATION</div>
-    <p style="font-size:11px; line-height:1.9; margin-bottom:16px;">
-      Håll minst <b style="color:#c0ffc0;">3 NM</b> mellan alla flygplan. Konfliktvarning visas i rött på radarn. Kollision = omedelbart game over.
-    </p>
-
-    <div style="color:#c0ffc0; font-size:12px; letter-spacing:1px; margin-bottom:6px; font-family:Arial,sans-serif; font-weight:bold;">BRÄNSLE</div>
-    <p style="font-size:11px; line-height:1.9; margin-bottom:16px;">
-      Varje plan har begränsat bränsle. Stripens vänsterkant lyser <b style="color:#ffaa00;">gult</b> (varning) och <b style="color:#ff4400;">rött + blinkar</b> (kritiskt). Bränslestopp = game over.
-    </p>
-
-    <div style="color:#c0ffc0; font-size:12px; letter-spacing:1px; margin-bottom:6px; font-family:Arial,sans-serif; font-weight:bold;">POÄNG</div>
-    <table style="width:100%; font-size:11px; line-height:2; border-collapse:collapse; margin-bottom:16px;">
-      <tr><td style="color:#4aff4a; width:60%;">Landning</td><td>+100 p (baspoäng per plan)</td></tr>
-      <tr><td style="color:#4aff4a;">Kursanrop (HDG)</td><td>−2 p per anrop</td></tr>
-      <tr><td style="color:#4aff4a;">Fartjustering (SPD)</td><td>−3 p per anrop</td></tr>
-      <tr><td style="color:#4aff4a;">Go-around</td><td>−20 p</td></tr>
-      <tr><td style="color:#4aff4a;">Paus</td><td>−1 p / 10 sekunder</td></tr>
-    </table>
-
-    <div style="color:#c0ffc0; font-size:12px; letter-spacing:1px; margin-bottom:6px; font-family:Arial,sans-serif; font-weight:bold;">TIPS</div>
-    <p style="font-size:11px; line-height:1.9; margin-bottom:6px;">
-      → Bygg en "downwind–base–final"-trafikkvarv för smidig inflygning.<br>
-      → Använd holding patterns för att skapa luckor vid hög trafik.<br>
-      → Minimera antalet anrop — varje onödigt HDG- eller SPD-anrop kostar poäng.<br>
-      → Tyngre plan (B77W, A388) kräver mer svängradie och längre inflygningssträcka.
-    </p>
-
-    <button onclick="hideHelp()" style="
-      margin-top:14px; width:100%; padding:9px;
-      background:#0d2a0d; border:1px solid #4aff4a; color:#4aff4a;
-      font-family:'Courier New',monospace; font-size:12px; letter-spacing:2px;
-      cursor:pointer; border-radius:4px;">STÄNG</button>
-  </div>
-</div>
-
-<script>
-function showHelp() {
-  const o = document.getElementById('help-overlay');
-  o.style.display = 'flex';
-}
-function hideHelp() {
-  document.getElementById('help-overlay').style.display = 'none';
-}
-</script>
 
 </body>
 </html>
