@@ -631,7 +631,11 @@ function isInILSCone(p) {
   return Math.abs(angleDiff(p.hdg,RWY_HDG))<6; // must be within 6° of 270°
 }
 function nearestConflict(p) {
-  return planes.find(q=>q.id!==p.id&&q.status!=='landed'&&q.status!=='goaround'&&Math.hypot(p.x-q.x,p.y-q.y)<SEP_MIN)||null;
+  const arr = [
+    ...planes.filter(q=>q.id!==p.id&&q.status!=='landed'&&q.status!=='goaround'),
+    ...depPlanes
+  ];
+  return arr.find(q=>Math.hypot(p.x-q.x,p.y-q.y)<SEP_MIN)||null;
 }
 
 function initiateGoAround(p, reason) {
@@ -646,12 +650,26 @@ function initiateGoAround(p, reason) {
 }
 
 function checkCollisions() {
-  for (let i=0;i<planes.length;i++) {
-    if (planes[i].status==='landed'||planes[i].status==='landing') continue;
-    for (let j=i+1;j<planes.length;j++) {
-      if (planes[j].status==='landed'||planes[j].status==='landing') continue;
-      if (Math.hypot(planes[i].x-planes[j].x,planes[i].y-planes[j].y)<NM)
-        { triggerGameOver('Collision: '+planes[i].call+' × '+planes[j].call); return; }
+  const active = planes.filter(p=>p.status!=='landed'&&p.status!=='landing');
+  // inbound vs inbound
+  for (let i=0;i<active.length;i++) {
+    for (let j=i+1;j<active.length;j++) {
+      if (Math.hypot(active[i].x-active[j].x,active[i].y-active[j].y)<NM)
+        { triggerGameOver('Collision: '+active[i].call+' × '+active[j].call); return; }
+    }
+  }
+  // inbound vs departure
+  for (const a of active) {
+    for (const d of depPlanes) {
+      if (Math.hypot(a.x-d.x,a.y-d.y)<NM)
+        { triggerGameOver('Collision: '+a.call+' × '+d.call); return; }
+    }
+  }
+  // departure vs departure
+  for (let i=0;i<depPlanes.length;i++) {
+    for (let j=i+1;j<depPlanes.length;j++) {
+      if (Math.hypot(depPlanes[i].x-depPlanes[j].x,depPlanes[i].y-depPlanes[j].y)<NM)
+        { triggerGameOver('Collision: '+depPlanes[i].call+' × '+depPlanes[j].call); return; }
     }
   }
 }
