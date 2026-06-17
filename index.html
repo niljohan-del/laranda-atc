@@ -107,6 +107,7 @@ body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospac
     <div class="stat-row"><span>TIME</span><span class="stat-val" id="s-time">00:00</span></div>
     <div class="stat-row"><span>KVAR</span><span class="stat-val" id="s-left">30:00</span></div>
     <div class="stat-row"><span>ANROP</span><span class="stat-val" id="s-cmds">0</span></div>
+    <div id="s-rwy-closed" style="font-size:10px;text-align:center;padding:3px 0;border-radius:3px;margin-top:2px;display:none;background:#1a0000;color:#ff4444;font-weight:bold;letter-spacing:1px;">RWY 27L STÄNGD</div>
     <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
     <button id="theme-btn" onclick="toggleTheme()" style="padding:5px;background:#0d1f0d;border:1px solid #2a5a2a;color:#4aff4a;font-family:'Courier New',monospace;font-size:10px;cursor:pointer;border-radius:3px;letter-spacing:1px;">☀ LJUST</button>
     <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
@@ -130,10 +131,11 @@ body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospac
     </div>
   </div>
   <div id="dep-panel" style="width:160px;background:#060c14;border-left:1px solid #1a3a1a;display:flex;flex-direction:column;padding:10px;gap:4px;font-size:10px;font-family:'Courier New',monospace;">
-    <div style="color:#00ccff;font-size:10px;letter-spacing:1px;margin-bottom:4px;border-bottom:1px solid #1a3a1a;padding-bottom:4px;">DEPARTURES</div>
+    <div style="color:#ff4444;font-size:10px;letter-spacing:1px;margin-bottom:4px;border-bottom:1px solid #3a1a1a;padding-bottom:4px;">DEPARTURES</div>
     <div style="color:#6a9a6a;font-size:9px;margin-bottom:4px;">RWY 01/19 · AUTO</div>
-    <div class="stat-row"><span>DEP</span><span class="stat-val" id="s-departed" style="color:#00ccff;">0</span></div>
-    <div class="stat-row"><span>AIRBORNE</span><span class="stat-val" id="s-dep-air">0</span></div>
+    <div class="stat-row"><span>DEP</span><span class="stat-val" id="s-departed" style="color:#ff4444;">0</span></div>
+    <div class="stat-row"><span>AIRBORNE</span><span class="stat-val" id="s-dep-air" style="color:#ff8888;">0</span></div>
+    <div id="s-dep-rwy" style="font-size:10px;text-align:center;padding:3px 0;border-radius:3px;margin-top:2px;display:none;background:#1a0000;color:#ff4444;font-weight:bold;letter-spacing:1px;">BANA STÄNGD</div>
     <div style="border-bottom:1px solid #1a3a1a;margin:4px 0"></div>
     <div style="color:#4aff4a;font-size:10px;letter-spacing:1px;margin-bottom:4px">DEP STRIPS</div>
     <div id="dep-strip-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
@@ -477,6 +479,8 @@ function spawnDepPlane() {
   // Start on departure runway heading south
   const spd = type.minSpd + 20 + Math.random()*40;
   depRwyOccupied = true; depRwyTimer = 50;
+  // 20% chance: depart south then turn right and head north
+  const goNorth = Math.random() < 0.20;
   const dp = {
     id: depNextId++, call, type,
     x: DEP_RWY_X, y: DEP_RWY_Y,
@@ -484,22 +488,40 @@ function spawnDepPlane() {
     spd, targetSpd: spd,
     status: 'departing',
     trail: [], fullTrail: [],
-    aiCmds: 0,          // how many AI heading tweaks done
-    nextAiTimer: 15 + Math.random()*20 // seconds before first AI cmd
+    aiCmds: 0,
+    nextAiTimer: goNorth ? 8 + Math.random()*5 : 15 + Math.random()*20,
+    goNorth,           // will eventually turn to 010-030°
+    northTurnDone: false
   };
   depPlanes.push(dp);
-  showMsg(call + ' – departing RWY 01');
+  showMsg(call + ' – departing RWY 01' + (goNorth ? ' (northbound)' : ''));
 }
 
 function updateDepPlanes(dt) {
   const remove = [];
   for (const p of depPlanes) {
     p.fuel = 9999; // departures have infinite fuel for UI purposes
-    // AI heading commands – occasional slight variation southbound
-    if (p.aiCmds < DEP_MAX_AI_CMDS) {
+    // AI heading commands
+    if (p.goNorth && !p.northTurnDone) {
+      // Northbound: after a few seconds south, turn right (west then north)
       p.nextAiTimer -= dt;
       if (p.nextAiTimer <= 0) {
-        // Random heading 160-200°
+        if (p.targetHdg > 180) {
+          // First turn: bank right toward ~270° (west)
+          p.targetHdg = 260 + Math.floor(Math.random()*20);
+          p.nextAiTimer = 10 + Math.random()*8;
+          p.aiCmds++;
+        } else if (p.targetHdg >= 240) {
+          // Second turn: continue right to northbound ~010-030°
+          p.targetHdg = 10 + Math.floor(Math.random()*20);
+          p.northTurnDone = true;
+          p.aiCmds++;
+        }
+      }
+    } else if (!p.goNorth && p.aiCmds < DEP_MAX_AI_CMDS) {
+      // Southbound: occasional slight variation
+      p.nextAiTimer -= dt;
+      if (p.nextAiTimer <= 0) {
         const variation = 160 + Math.floor(Math.random()*40);
         p.targetHdg = variation;
         p.aiCmds++;
@@ -683,7 +705,7 @@ function draw() {
   ctx.lineTo(RWY_X+Math.cos(rwyRad)*rLen/2, RWY_Y+Math.sin(rwyRad)*rLen/2);
   ctx.stroke(); ctx.lineWidth=1;
   ctx.fillStyle=runwayOccupied?'#cc2200':(LM?'#006600':'#00cc44'); ctx.font='bold 10px Courier New';
-  ctx.fillText(runwayOccupied?'RWY 27L  CLOSED '+Math.ceil(runwayTimer)+'s':'RWY 27L', RWY_X+8*iz, RWY_Y-8*iz);
+  ctx.fillText('RWY 27L', RWY_X+8*iz, RWY_Y-8*iz);
   // Persistent landed trails (white dashed)
   for (const entry of landedLog) {
     if (!entry.showTrail || entry.trail.length < 2) continue;
@@ -715,15 +737,10 @@ function drawDepRunway(iz) {
   ctx.lineTo(DEP_RWY_X + Math.cos(rwyRad)*rLen/2, DEP_RWY_Y + Math.sin(rwyRad)*rLen/2);
   ctx.stroke();
   ctx.lineWidth = 1;
-  // Label
+  // Label (only show runway name, closed status shown in sidebar)
   ctx.font = 'bold 10px Courier New';
-  if (depRwyOccupied) {
-    ctx.fillStyle = '#cc2200';
-    ctx.fillText('RWY 01  CLOSED '+Math.ceil(depRwyTimer)+'s', DEP_RWY_X + 6*iz, DEP_RWY_Y - 16*iz);
-  } else {
-    ctx.fillStyle = LM ? '#003388' : '#00aaff';
-    ctx.fillText('RWY 01/19', DEP_RWY_X + 6*iz, DEP_RWY_Y - 16*iz);
-  }
+  ctx.fillStyle = depRwyOccupied ? '#cc2200' : (LM ? '#003388' : '#00aaff');
+  ctx.fillText('RWY 01/19', DEP_RWY_X + 6*iz, DEP_RWY_Y - 16*iz);
   // Small arrow indicating departure direction (south)
   ctx.strokeStyle = LM ? '#003388' : '#00aaff';
   ctx.lineWidth = 1.5*iz;
@@ -736,10 +753,10 @@ function drawDepRunway(iz) {
 }
 
 function drawDepPlane(p, iz=1) {
-  const col = LM ? '#cc6600' : '#00ccff'; // cyan in dark, orange in light
+  const col = LM ? '#cc2200' : '#ff4444'; // red departures
   // trail
   if (p.trail.length > 1) {
-    ctx.strokeStyle = LM ? 'rgba(200,100,0,.35)' : 'rgba(0,200,255,.35)';
+    ctx.strokeStyle = LM ? 'rgba(180,0,0,.35)' : 'rgba(255,80,80,.35)';
     ctx.lineWidth = 1.8*iz;
     ctx.beginPath(); ctx.moveTo(p.trail[0].x, p.trail[0].y);
     p.trail.forEach(pt=>ctx.lineTo(pt.x,pt.y)); ctx.stroke();
@@ -764,10 +781,10 @@ function drawDepPlane(p, iz=1) {
   // label
   const lx = p.x + sz + 4*iz, ly = p.y - 3*iz;
   ctx.font = '10px Courier New';
-  ctx.fillStyle = LM ? '#883300' : col;
+  ctx.fillStyle = LM ? '#990000' : col;
   ctx.fillText(p.call, lx, ly);
   ctx.font = '9px Courier New';
-  ctx.fillStyle = LM ? 'rgba(180,80,0,.8)' : 'rgba(0,200,255,.8)';
+  ctx.fillStyle = LM ? 'rgba(180,0,0,.8)' : 'rgba(255,100,100,.8)';
   ctx.fillText(Math.round(p.spd)+'kt '+fmtHdg(p.hdg), lx, ly+11*iz);
 }
 
@@ -885,9 +902,25 @@ function updateSidebar() {
   document.getElementById('s-time').textContent=fmtTime(elapsed);
   document.getElementById('s-left').textContent=fmtTime(Math.max(0,SESSION_MAX-elapsed));
   document.getElementById('s-cmds').textContent=totalCmds+' (HDG:'+hdgCmds+' SPD+:'+spdUpCmds+')';
+  const rwyEl = document.getElementById('s-rwy-closed');
+  if (rwyEl) {
+    if (runwayOccupied) {
+      rwyEl.style.display = 'block';
+      rwyEl.textContent = 'RWY 27L STÄNGD ' + Math.ceil(runwayTimer) + 's';
+    } else {
+      rwyEl.style.display = 'none';
+    }
+  }
   // Departure panel
   document.getElementById('s-departed').textContent = depDeparted;
   document.getElementById('s-dep-air').textContent = depPlanes.length;
+  const depRwyEl = document.getElementById('s-dep-rwy');
+  if (depRwyOccupied) {
+    depRwyEl.style.display = 'block';
+    depRwyEl.textContent = 'BANA STÄNGD ' + Math.ceil(depRwyTimer) + 's';
+  } else {
+    depRwyEl.style.display = 'none';
+  }
   // Departure strips
   const depList = document.getElementById('dep-strip-list');
   depPlanes.forEach(p => {
@@ -895,9 +928,9 @@ function updateSidebar() {
     if (!div) {
       div = document.createElement('div');
       div.dataset.dpid = p.id;
-      div.style.cssText = 'background:#0a1f2a;border:1px solid #1a3a4a;border-left:3px solid #00aaff;padding:4px 6px;border-radius:2px;font-size:10px;';
+      div.style.cssText = 'background:#1a0a0a;border:1px solid #4a1a1a;border-left:3px solid #ff4444;padding:4px 6px;border-radius:2px;font-size:10px;';
       const c = document.createElement('div');
-      c.style.cssText = 'color:#00ccff;font-weight:bold;font-size:11px;';
+      c.style.cssText = 'color:#ff4444;font-weight:bold;font-size:11px;';
       c.textContent = p.call;
       const t = document.createElement('div');
       t.style.cssText = 'color:#6a9aaa;font-size:9px;margin-top:1px;';
@@ -1358,7 +1391,7 @@ initGame();
       </div>
 
       <div style="min-width:170px;max-width:210px;">
-        <div style="color:#00ccff;font-size:10px;letter-spacing:1px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">AVGÅNGAR – RWY 01/19</div>
+        <div style="color:#ff4444;font-size:10px;letter-spacing:1px;font-weight:bold;font-family:Arial,sans-serif;margin-bottom:6px;">AVGÅNGAR – RWY 01/19</div>
         <p style="color:#80c080;font-size:10px;line-height:1.8;font-family:Arial,sans-serif;">
           Var 90:e sekund lyfter ett avgångsplan automatiskt söderut. Dessa plan (cyan ◆) styrs av systemet — du kan <b style="color:#c0ffc0;">inte</b> anropa dem. Håll separation även mot avgångarna!
         </p>
