@@ -111,6 +111,22 @@ body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospac
     <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
     <button id="theme-btn" onclick="toggleTheme()" style="padding:5px;background:#0d1f0d;border:1px solid #2a5a2a;color:#4aff4a;font-family:'Courier New',monospace;font-size:10px;cursor:pointer;border-radius:3px;letter-spacing:1px;">☀ LJUST</button>
     <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
+    <button id="ptt-btn"
+      onmousedown="startPTT()" onmouseup="stopPTT()" ontouchstart="startPTT()" ontouchend="stopPTT()"
+      style="width:100%;padding:7px;background:#0d1f0d;border:1px solid #2a5a2a;color:#4aff4a;
+             font-family:'Courier New',monospace;font-size:10px;cursor:pointer;border-radius:3px;
+             letter-spacing:1px;user-select:none;-webkit-user-select:none;">
+      🎙 HOLD TO TALK [T]
+    </button>
+    <div id="radio-box" style="display:none;background:#050e05;border:1px solid #1a4a1a;border-radius:4px;padding:6px 8px;font-size:10px;font-family:'Courier New',monospace;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+        <div id="radio-dot" style="width:8px;height:8px;border-radius:50%;background:#4aff4a;animation:radioblink .5s infinite;"></div>
+        <span style="color:#4aff4a;letter-spacing:1px;font-size:9px;">TRANSMITTING</span>
+      </div>
+      <div id="radio-transcript" style="color:#c0ffc0;min-height:28px;line-height:1.5;font-size:10px;">…</div>
+      <div id="radio-result" style="color:#80c080;font-size:9px;margin-top:3px;min-height:14px;"></div>
+    </div>
+    <div style="border-bottom:1px solid #1a3a1a;margin:2px 0"></div>
     <div style="color:#4aff4a;font-size:10px;letter-spacing:1px;margin-bottom:4px">SIM SPEED</div>
     <div id="speed-ctrl">
       <button class="spd-btn" id="btn-0x" onclick="togglePause()">❙❙</button>
@@ -1444,7 +1460,240 @@ initGame();
 }
 .menu-opt:hover { border-color: #4aff4a; color: #ffffff; background: rgba(30,80,30,0.7); }
 .menu-opt.selected { background: #1a5a10; border-color: #4aff4a; color: #ffffff; box-shadow: 0 0 10px rgba(74,255,74,0.3); }
+@keyframes radioblink { 0%,100%{opacity:1} 50%{opacity:.2} }
+#ptt-btn.active { background:#0a3a0a !important; border-color:#4aff4a !important; box-shadow:0 0 8px rgba(74,255,74,0.5); color:#ffffff !important; }
 </style>
 
+
+<!-- ── VOICE / PTT ENGINE ─────────────────────────────────────────────────── -->
+<script>
+(function() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    document.getElementById('ptt-btn').title = 'Speech not supported in this browser';
+    document.getElementById('ptt-btn').style.opacity = '0.4';
+    return;
+  }
+
+  const rec = new SpeechRecognition();
+  rec.lang = 'en-US';
+  rec.continuous = false;
+  rec.interimResults = true;
+  rec.maxAlternatives = 3;
+
+  let active = false;
+
+  // ── UI helpers ────────────────────────────────────────────────────────────
+  function showRadio(on) {
+    document.getElementById('radio-box').style.display = on ? 'block' : 'none';
+    const btn = document.getElementById('ptt-btn');
+    if (on) btn.classList.add('active'); else btn.classList.remove('active');
+  }
+  function setTranscript(txt) { document.getElementById('radio-transcript').textContent = txt || '…'; }
+  function setResult(txt, ok) {
+    const el = document.getElementById('radio-result');
+    el.textContent = txt;
+    el.style.color = ok ? '#4aff4a' : '#ff6060';
+  }
+
+  // ── Phonetic alphabet → digit/letter ─────────────────────────────────────
+  const PHONETIC = {
+    zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, niner:9, nine:9,
+    alfa:1, alpha:1, bravo:2, charlie:3, delta:4, echo:5, foxtrot:6, golf:7, hotel:8, india:9,
+  };
+
+  // ── Normalise digits: "two seven zero" → 270 ─────────────────────────────
+  function parseWordNumber(words) {
+    // First try direct number
+    const direct = parseInt(words.replace(/\s/g,''));
+    if (!isNaN(direct)) return direct;
+    // Word by word
+    const parts = words.trim().split(/\s+/);
+    let digits = '';
+    for (const w of parts) {
+      const n = PHONETIC[w.toLowerCase()];
+      if (n !== undefined) digits += n;
+      else if (/^\d+$/.test(w)) digits += w;
+    }
+    return digits.length ? parseInt(digits) : NaN;
+  }
+
+  // ── Find a plane by callsign fragment ────────────────────────────────────
+  function findPlane(token) {
+    // token e.g. "SAS748", "sas 7 4 8", "sierra alpha sierra 748"
+    const norm = token.toUpperCase().replace(/\s+/g,'');
+    return planes.find(p => p.status !== 'landed' && p.call.replace(/\s/g,'') === norm) || null;
+  }
+
+  // ── Command patterns ──────────────────────────────────────────────────────
+  // Heading: "SAS748 turn left heading 270" | "SAS748 fly heading 270" | "SAS748 heading 270"
+  const RE_HDG  = /^(.+?)\s+(?:turn\s+(?:left|right)\s+)?(?:fly\s+)?(?:heading|hdg|turn\s+to)\s+([\w\s]+)$/i;
+  // Speed: "SAS748 speed 220" | "SAS748 reduce speed 180" | "SAS748 maintain 200 knots"
+  const RE_SPD  = /^(.+?)\s+(?:reduce\s+|increase\s+|maintain\s+)?(?:speed|knots?|kts?)\s+([\w\s]+)$/i;
+  const RE_SPD2 = /^(.+?)\s+([\w\s]+)\s+(?:knots?|kts?)$/i;
+  // ILS: "SAS748 ILS" | "SAS748 cleared ILS" | "SAS748 intercept localizer"
+  const RE_ILS  = /^(.+?)\s+(?:cleared\s+)?(?:ils|localizer|intercept|land)$/i;
+  // Hold: "SAS748 hold" | "SAS748 enter holding" | "SAS748 orbit"
+  const RE_HOLD = /^(.+?)\s+(?:hold|holding|orbit|circle)$/i;
+  // Go around: "SAS748 go around"
+  const RE_GA   = /^(.+?)\s+go\s+around$/i;
+  // Resume / continue: "SAS748 resume own navigation" | "SAS748 continue"
+  const RE_CONT = /^(.+?)\s+(?:resume|continue|cancel\s+hold)$/i;
+
+  // ── Execute parsed command ────────────────────────────────────────────────
+  function executeVoiceCmd(text) {
+    const t = text.trim();
+    let m;
+
+    // ILS
+    if ((m = t.match(RE_ILS))) {
+      const p = findPlane(m[1]);
+      if (!p) return setResult('Unknown callsign: ' + m[1], false);
+      if (p.status === 'ils' || p.status === 'landing') return setResult(p.call + ' already on ILS', false);
+      // Simulate ILS button press – set flag, game loop handles intercept
+      p.targetSpd = Math.min(p.spd, p.type.minSpd + 20);
+      // Use existing ILS logic by setting status to ils attempt
+      if (inIlsCone(p)) {
+        p.status = 'ils';
+        setResult(p.call + ' – cleared ILS ✓', true);
+        showMsg(p.call + ' – ILS (voice)');
+      } else {
+        setResult(p.call + ' – not in ILS cone', false);
+        showMsg(p.call + ' – not in cone, ILS rejected');
+      }
+      return;
+    }
+
+    // Go around
+    if ((m = t.match(RE_GA))) {
+      const p = findPlane(m[1]);
+      if (!p) return setResult('Unknown callsign: ' + m[1], false);
+      initiateGoAround(p, 'manual');
+      setResult(p.call + ' – go around ✓', true);
+      return;
+    }
+
+    // Hold / cancel hold
+    if ((m = t.match(RE_HOLD))) {
+      const p = findPlane(m[1]);
+      if (!p) return setResult('Unknown callsign: ' + m[1], false);
+      if (p.status === 'ils' || p.status === 'landing') return setResult(p.call + ' on ILS – cannot hold', false);
+      p.status = 'hold';
+      p.holdCx = p.x; p.holdCy = p.y; p.holdAngle = p.hdg;
+      setResult(p.call + ' – holding ✓', true);
+      showMsg(p.call + ' – HOLD (voice)');
+      return;
+    }
+
+    if ((m = t.match(RE_CONT))) {
+      const p = findPlane(m[1]);
+      if (!p) return setResult('Unknown callsign: ' + m[1], false);
+      if (p.status === 'hold') { p.status = 'inbound'; setResult(p.call + ' – hold cancelled ✓', true); showMsg(p.call + ' – resume (voice)'); }
+      else setResult(p.call + ' – not in hold', false);
+      return;
+    }
+
+    // Heading
+    if ((m = t.match(RE_HDG))) {
+      const p = findPlane(m[1]);
+      if (!p) return setResult('Unknown callsign: ' + m[1], false);
+      if (p.status === 'ils' || p.status === 'landing') return setResult(p.call + ' on ILS', false);
+      const hdg = parseWordNumber(m[2]);
+      if (isNaN(hdg) || hdg < 1 || hdg > 360) return setResult('Invalid heading: ' + m[2], false);
+      p.targetHdg = hdg;
+      if (p.status === 'hold') p.status = 'inbound';
+      hdgCmds++; totalCmds++; score -= 2;
+      if (p.planeCmds !== undefined) p.planeCmds++;
+      setResult(p.call + ' – HDG ' + hdg + '° ✓  −2 pts', true);
+      showMsg(p.call + ' HDG ' + hdg + ' (voice)  −2 pts');
+      return;
+    }
+
+    // Speed (pattern 1: "speed 220")
+    if ((m = t.match(RE_SPD))) {
+      const p = findPlane(m[1]);
+      if (!p) return setResult('Unknown callsign: ' + m[1], false);
+      const spd = parseWordNumber(m[2]);
+      if (isNaN(spd) || spd < 100 || spd > 400) return setResult('Invalid speed: ' + m[2], false);
+      const prev = p.targetSpd;
+      p.targetSpd = Math.max(p.type.minSpd, Math.min(spd, 350));
+      if (p.targetSpd > prev) { spdUpCmds++; score -= 3; if (p.planeCmds !== undefined) p.planeCmds++; setResult(p.call + ' – SPD ' + p.targetSpd + 'kt ✓  −3 pts', true); showMsg(p.call + ' SPD ' + p.targetSpd + ' (voice)  −3 pts'); }
+      else { spdDnCmds++; if (p.planeCmds !== undefined) p.planeCmds++; setResult(p.call + ' – SPD ' + p.targetSpd + 'kt ✓', true); showMsg(p.call + ' SPD ' + p.targetSpd + ' (voice)'); }
+      totalCmds++;
+      return;
+    }
+
+    // Speed (pattern 2: "180 knots")
+    if ((m = t.match(RE_SPD2))) {
+      const p = findPlane(m[1]);
+      if (!p) return setResult('Unknown callsign: ' + m[1], false);
+      const spd = parseWordNumber(m[2]);
+      if (!isNaN(spd) && spd >= 100 && spd <= 400) {
+        const prev = p.targetSpd;
+        p.targetSpd = Math.max(p.type.minSpd, Math.min(spd, 350));
+        if (p.targetSpd > prev) { spdUpCmds++; score -= 3; if (p.planeCmds !== undefined) p.planeCmds++; }
+        else { spdDnCmds++; if (p.planeCmds !== undefined) p.planeCmds++; }
+        totalCmds++;
+        setResult(p.call + ' – SPD ' + p.targetSpd + 'kt ✓', true);
+        showMsg(p.call + ' SPD ' + p.targetSpd + ' (voice)');
+        return;
+      }
+    }
+
+    setResult('Not understood: "' + t + '"', false);
+  }
+
+  // ── Recognition events ────────────────────────────────────────────────────
+  rec.onresult = (e) => {
+    let interim = '';
+    let final = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    setTranscript(final || interim);
+    if (final) {
+      setResult('Processing…', true);
+      executeVoiceCmd(final);
+    }
+  };
+
+  rec.onerror = (e) => {
+    setResult('Error: ' + e.error, false);
+    stopPTT();
+  };
+
+  rec.onend = () => { if (active) { active = false; showRadio(false); } };
+
+  // ── Public PTT functions ──────────────────────────────────────────────────
+  window.startPTT = function() {
+    if (active || gameOver || paused) return;
+    active = true;
+    setTranscript('…');
+    setResult('', true);
+    showRadio(true);
+    try { rec.start(); } catch(e) { /* already started */ }
+  };
+
+  window.stopPTT = function() {
+    if (!active) return;
+    active = false;
+    try { rec.stop(); } catch(e) {}
+    setTimeout(() => { if (!active) showRadio(false); }, 2500);
+  };
+
+  // ── Keyboard T = PTT ──────────────────────────────────────────────────────
+  let keyDown = false;
+  document.addEventListener('keydown', e => {
+    if (e.key === 't' || e.key === 'T') {
+      if (!keyDown && !e.repeat) { keyDown = true; startPTT(); }
+    }
+  });
+  document.addEventListener('keyup', e => {
+    if (e.key === 't' || e.key === 'T') { keyDown = false; stopPTT(); }
+  });
+
+})();
+</script>
 </body>
 </html>
