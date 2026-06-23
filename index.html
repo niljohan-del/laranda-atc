@@ -116,7 +116,7 @@ body { background: #0a0f1a; color: #a0c4a0; font-family: 'Courier New', monospac
       style="width:100%;padding:7px;background:#0d1f0d;border:1px solid #2a5a2a;color:#4aff4a;
              font-family:'Courier New',monospace;font-size:10px;cursor:pointer;border-radius:3px;
              letter-spacing:1px;user-select:none;-webkit-user-select:none;">
-      🎙 HOLD TO TALK [T]
+      🎙 HOLD TO TALK [SPACE]
     </button>
     <div id="radio-box" style="display:none;background:#050e05;border:1px solid #1a4a1a;border-radius:4px;padding:6px 8px;font-size:10px;font-family:'Courier New',monospace;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
@@ -711,11 +711,40 @@ function draw() {
   ctx.strokeStyle=LM?'#2a8a2a':'#1a6a1a'; ctx.lineWidth=2.5*iz; ctx.stroke();
   ctx.beginPath(); ctx.arc(RWY_X, RWY_Y, 20*NM, 0, Math.PI*2);
   ctx.strokeStyle='rgba(26,160,26,0.12)'; ctx.lineWidth=8*iz; ctx.stroke();
-  // SECTOR label at top
+  // Compass bearing markers around sector ring
   ctx.save();
-  ctx.font=(10*iz)+'px Courier New'; ctx.fillStyle=LM?'#1a5a1a':'#2a7a2a';
+  const sR = 20*NM;
+  for (let deg = 0; deg < 360; deg += 10) {
+    const rad = (deg - 90) * Math.PI / 180;
+    const isMajor = deg % 30 === 0;
+    const isCard  = deg % 90 === 0;
+    const tickLen = isCard ? 14*iz : isMajor ? 9*iz : 5*iz;
+    // tick line (inward from ring)
+    ctx.beginPath();
+    ctx.moveTo(RWY_X + Math.cos(rad)*sR, RWY_Y + Math.sin(rad)*sR);
+    ctx.lineTo(RWY_X + Math.cos(rad)*(sR - tickLen), RWY_Y + Math.sin(rad)*(sR - tickLen));
+    ctx.strokeStyle = isCard  ? (LM?'#1a7a1a':'#3aaa3a') :
+                      isMajor ? (LM?'#1a5a1a':'#2a7a2a') :
+                                (LM?'rgba(0,80,0,.4)':'rgba(40,100,40,.4)');
+    ctx.lineWidth = (isCard ? 2 : 1.2) * iz;
+    ctx.stroke();
+    // label every 30 degrees
+    if (isMajor) {
+      const lblR = sR + 16*iz;
+      const card = {0:'N', 90:'E', 180:'S', 270:'W'};
+      const lbl = card[deg] || String(deg);
+      ctx.font = (isCard ? 'bold ' : '') + (isCard ? 11 : 9)*iz + 'px Courier New';
+      ctx.fillStyle = isCard ? (LM?'#0a6a0a':'#4aff4a') : (LM?'#1a5a1a':'#2a9a2a');
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(lbl, RWY_X + Math.cos(rad)*lblR, RWY_Y + Math.sin(rad)*lblR);
+    }
+  }
+  ctx.restore();
+  // SECTOR label (shifted out to clear compass labels)
+  ctx.save();
+  ctx.font=(9*iz)+'px Courier New'; ctx.fillStyle=LM?'#1a4a1a':'#1a6a1a';
   ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('LARANDA TMA', RWY_X, RWY_Y - 20*NM - 14*iz);
+  ctx.fillText('LARANDA TMA', RWY_X, RWY_Y - 20*NM - 32*iz);
   ctx.textAlign='start';
   ctx.restore();
   // ILS cone
@@ -1494,6 +1523,9 @@ initGame();
     const el = document.getElementById('radio-result');
     el.textContent = txt;
     el.style.color = ok ? '#4aff4a' : '#ff6060';
+    if (ok && txt && txt !== 'Processing…' && typeof window.playConfirmBeep === 'function') {
+      window.playConfirmBeep();
+    }
   }
 
   // ── Phonetic alphabet → digit/letter ─────────────────────────────────────
@@ -1553,7 +1585,7 @@ initGame();
       // Simulate ILS button press – set flag, game loop handles intercept
       p.targetSpd = Math.min(p.spd, p.type.minSpd + 20);
       // Use existing ILS logic by setting status to ils attempt
-      if (inIlsCone(p)) {
+      if (isInILSCone(p)) {
         p.status = 'ils';
         setResult(p.call + ' – cleared ILS ✓', true);
         showMsg(p.call + ' – ILS (voice)');
@@ -1663,7 +1695,7 @@ initGame();
     stopPTT();
   };
 
-  rec.onend = () => { if (active) { active = false; showRadio(false); } };
+  rec.onend = () => { active = false; setTimeout(() => showRadio(false), 1200); };
 
   // ── Public PTT functions ──────────────────────────────────────────────────
   window.startPTT = function() {
@@ -1682,15 +1714,34 @@ initGame();
     setTimeout(() => { if (!active) showRadio(false); }, 2500);
   };
 
-  // ── Keyboard T = PTT ──────────────────────────────────────────────────────
+  // ── Confirmation beep (played on successful voice command) ───────────────
+  window.playConfirmBeep = function() {
+    try {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1020, ac.currentTime);
+      gain.gain.setValueAtTime(0.18, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.18);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.18);
+    } catch(e) { /* silent fail if audio blocked */ }
+  };
+
+  // ── Keyboard SPACE = PTT ──────────────────────────────────────────────────
   let keyDown = false;
   document.addEventListener('keydown', e => {
-    if (e.key === 't' || e.key === 'T') {
+    if (e.key === ' ' || e.key === 'Spacebar') {
+      // Prevent page scroll only when not typing in an input
+      if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
+      e.preventDefault();
       if (!keyDown && !e.repeat) { keyDown = true; startPTT(); }
     }
   });
   document.addEventListener('keyup', e => {
-    if (e.key === 't' || e.key === 'T') { keyDown = false; stopPTT(); }
+    if (e.key === ' ' || e.key === 'Spacebar') { keyDown = false; stopPTT(); }
   });
 
 })();
